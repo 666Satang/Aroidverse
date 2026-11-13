@@ -1,6 +1,7 @@
 // Plants tab (+ plant form, photo viewer) and customers (list, detail, form).
-import { ctx, $, esc, num, str, sum, money, fmtDate, icon, chIcon, thumbHTML, toast, openSheet, confirmDlg, bind, debounce, CH, errMsg, emptyHTML, moreBtn, pill, isActive, balanceOf, busy, today } from './ui-core.js';
+import { ctx, $, esc, num, str, sum, money, fmtDate, icon, chIcon, thumbHTML, toast, openSheet, confirmDlg, bind, debounce, CH, errMsg, emptyHTML, moreBtn, pill, isActive, balanceOf, busy, today, sortBarHTML, getPickSort, setPickSort, sortPlants, soldHint } from './ui-core.js';
 import { orderCard, openOrder } from './ui-orders.js';
+import { openCropper, showCropped } from './ui-crop.js';
 
 // ---------------------------------------------------------------- plants
 let soldLoading = false, soldLoaded = false;
@@ -10,13 +11,13 @@ function plantRow(p, sold) {
   const right = sold ? (p.sold_at ? '<div class="sub">ขาย ' + esc(fmtDate(String(p.sold_at).slice(0, 10), true)) + '</div>' : '')
     : (q > 1 ? '<div style="margin-top:4px">' + pill('sky', 'เหลือ ' + q) + '</div>' : '');
   return '<div class="prow" role="button" tabindex="0" data-act="plant" data-id="' + esc(p.id) + '"><button class="thumb" data-act="photo" data-id="' + esc(p.id) + '" aria-label="ดูรูป">' + (p.thumb ? '<img alt="" decoding="async" loading="lazy" src="' + esc(p.thumb) + '">' : icon('leaf')) + '</button>' +
-    '<div class="grow"><div class="nm clamp2">' + esc(p.name) + '</div><div class="sub trunc">' + esc(p.code) + (p.detail ? ' · ' + esc(p.detail) : '') + '</div></div><div class="right"><div class="pr">' + money(p.price) + '</div>' + right + '</div></div>';
+    '<div class="grow"><div class="nm clamp2">' + esc(p.name) + '</div><div class="sub trunc">' + esc(p.code) + esc(soldHint(p)) + (p.detail ? ' · ' + esc(p.detail) : '') + '</div></div><div class="right"><div class="pr">' + money(p.price) + '</div>' + right + '</div></div>';
 }
 
 export const plantsView = {
   mount(el) {
     const ui = ctx.ui;
-    el.innerHTML = '<div class="search"><span>' + icon('search') + '</span><input id="psearch" type="search" placeholder="ค้นหาต้นไม้ ชื่อ รหัส หรือรายละเอียด" value="' + esc(ui.pq) + '" autocomplete="off"></div><div class="seg" id="pseg"></div><div class="list" id="plist"></div>';
+    el.innerHTML = '<div class="search"><span>' + icon('search') + '</span><input id="psearch" type="search" placeholder="ค้นหาต้นไม้ ชื่อ รหัส หรือรายละเอียด" value="' + esc(ui.pq) + '" autocomplete="off"></div><div class="seg" id="pseg"></div>' + sortBarHTML(' id="psortw"') + '<div class="list" id="plist"></div>';
     const upd = () => this.update(el);
     $('#psearch', el).addEventListener('input', debounce((e) => { ui.pq = e.target.value; ui.limP = 60; upd(); }, 200));
     bind(el, {
@@ -30,6 +31,7 @@ export const plantsView = {
       moresold: () => loadSold(upd),
       new: () => openPlantForm(''),
     });
+    el.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.sort !== undefined) { setPickSort(e.target.value); ui.limP = 60; upd(); } });
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.dataset && e.target.dataset.act === 'plant') openPlantForm(e.target.dataset.id); });
     this.update(el);
   },
@@ -37,7 +39,8 @@ export const plantsView = {
     const ui = ctx.ui, st = ctx.store.state, q = ui.pq.trim().toLowerCase();
     $('#pseg', el).innerHTML = '<button data-act="tab" data-s="0" class="' + (ui.sold ? '' : 'on') + '">มีสต็อก</button><button data-act="tab" data-s="1" class="' + (ui.sold ? 'on' : '') + '">ขายแล้ว</button>';
     let l = st.plants.filter((p) => (ui.sold ? num(p.qty) <= 0 : num(p.qty) > 0) && (!q || (str(p.name) + ' ' + str(p.code) + ' ' + str(p.detail)).toLowerCase().includes(q)));
-    if (ui.sold) l = l.sort((a, b) => (str(b.sold_at) > str(a.sold_at) ? 1 : -1));
+    if (ui.sold) l = l.sort((a, b) => (str(b.sold_at) > str(a.sold_at) ? 1 : -1)); else l = sortPlants(l, getPickSort());
+    $('#psortw', el).hidden = ui.sold;
     let h = '';
     if (soldLoading && ui.sold) h = '<div class="more"><span class="spin"></span></div>';
     else if (!l.length) {
@@ -60,41 +63,60 @@ async function loadSold(upd) {
 }
 
 function openPhoto(id) {
-  const p = ctx.store.getPlant(id); if (!p) return;
+  const S = ctx.store, p = S.getPlant(id); if (!p) return;
   const s = openSheet({ title: p.name, build(sh) { sh.body.innerHTML = '<div class="inv-wrap" style="min-height:240px">' + (p.thumb ? '<img alt="" src="' + esc(p.thumb) + '" style="width:100%;filter:blur(2px)">' : '') + '</div>'; } });
   if (!p.has_photo && !p.thumb) { $('.inv-wrap', s.body).innerHTML = '<div class="empty"><div class="em">🌿</div><p>ต้นนี้ยังไม่มีรูป</p></div>'; return; }
-  ctx.store.getPlantPhoto(id).then((url) => {
+  S.getPlantPhotoDoc(id).then((doc) => {
     if (s.closed) return;
     const w = $('.inv-wrap', s.body);
-    w.innerHTML = url ? '<img alt="' + esc(p.name) + '" src="' + esc(url) + '" style="width:100%;display:block">' : (p.thumb ? '<img alt="" src="' + esc(p.thumb) + '" style="width:100%">' : '<div class="empty"><p>ไม่พบรูป</p></div>');
-  }, () => {});
+    if (doc && doc.data) { w.style.minHeight = '0'; return showCropped(w, doc.data, doc.crop, p.name); }
+    w.innerHTML = p.thumb ? '<img alt="" src="' + esc(p.thumb) + '" style="width:100%">' : '<div class="empty"><p>ไม่พบรูป</p></div>';
+  }).catch(() => {});
 }
 
 export function openPlantForm(id) {
   const S = ctx.store, p0 = id ? S.getPlant(id) : null;
   if (id && !p0) return;
   const p = p0 || { name: '', detail: '', price: '', qty: 1, note: '' };
-  let photo = null, preview = p.thumb || '';
+  let photo = null, stored = null, preview = p.thumb || '';
   openSheet({
     title: id ? 'แก้ไข ' + p.code : 'เพิ่มต้นไม้', sticky: true,
     build(s) {
       const B = s.body;
-      B.innerHTML = '<div class="card"><div class="row" style="gap:16px"><div class="thumb" id="p-prev" style="width:96px;height:96px;border-radius:24px"></div><div class="grow"><label class="btn sec sm block" style="cursor:pointer">' + icon('camera') + ' <span id="p-lbl">ถ่าย / เลือกรูป</span><input type="file" accept="image/*" id="p-file" hidden></label><button class="btn ghost sm block" id="p-nophoto" style="margin-top:8px" hidden>ลบรูป</button></div></div></div>' +
+      B.innerHTML = '<div class="card"><div class="row" style="gap:16px"><div class="thumb" id="p-prev" style="width:96px;height:96px;border-radius:24px"></div><div class="grow"><label class="btn sec sm block" style="cursor:pointer">' + icon('camera') + ' <span id="p-lbl">ถ่าย / เลือกรูป</span><input type="file" accept="image/*" id="p-file" hidden></label><div class="grid2" id="p-ph2" style="margin-top:8px" hidden><button class="btn ghost sm" id="p-recrop">ครอปใหม่</button><button class="btn ghost sm" id="p-nophoto">ลบรูป</button></div></div></div></div>' +
         '<div class="card"><label class="fld">ชื่อต้นไม้ *</label><input id="p-name" value="' + esc(p.name) + '" autocomplete="off"><label class="fld">รายละเอียด</label><input id="p-detail" value="' + esc(p.detail) + '" placeholder="เช่น ขนาดกระถาง / ลักษณะใบ" autocomplete="off">' +
         '<div class="grid2"><div><label class="fld">ราคา (บาท) *</label><input id="p-price" type="number" inputmode="decimal" value="' + esc(p.price) + '"></div><div><label class="fld">จำนวน</label><input id="p-qty" type="number" inputmode="numeric" value="' + esc(p.qty) + '"></div></div>' +
         '<label class="fld">หมายเหตุ</label><textarea id="p-note" style="min-height:70px">' + esc(p.note) + '</textarea></div>' +
         (id ? '<button class="btn warn block" id="p-del">' + icon('trash') + ' ลบต้นไม้นี้</button>' : '');
       s.foot.innerHTML = '<button class="btn block" id="p-save">บันทึก</button>';
-      const draw = () => { $('#p-prev', B).innerHTML = preview ? '<img alt="" src="' + esc(preview) + '">' : icon('leaf'); $('#p-nophoto', B).hidden = !preview; $('#p-lbl', B).textContent = preview ? 'เปลี่ยนรูป' : 'ถ่าย / เลือกรูป'; };
+      const draw = () => { $('#p-prev', B).innerHTML = preview ? '<img alt="" src="' + esc(preview) + '">' : icon('leaf'); $('#p-ph2', B).hidden = !preview; $('#p-recrop', B).hidden = !canRecrop(); $('#p-lbl', B).textContent = preview ? 'เปลี่ยนรูป' : 'ถ่าย / เลือกรูป'; };
+      // re-crop is possible for a freshly chosen photo, or when the stored original still exists
+      const canRecrop = () => !!((photo && photo.full) || (id && p.has_photo && photo === null) || (id && p.has_photo && photo && !photo.full));
       draw();
-      if (id && p.has_photo) S.getPlantPhoto(id).then((url) => { if (url && photo === null && !s.closed) { preview = url; draw(); } }, () => {});
       $('#p-file', B).onchange = async (e) => {
         const file = e.target.files && e.target.files[0]; e.target.value = ''; if (!file) return;
-        const end = busy('กำลังย่อรูป…');
-        try { const gm = await import('./gemini.js'); photo = await gm.makePlantPhoto(file); preview = photo.full; draw(); } catch (er) { toast('อ่านรูปไม่สำเร็จ', true); }
-        end();
+        const r = await openCropper(file);
+        if (!r || s.closed) return;
+        photo = { thumb: r.thumb, full: r.full, crop: r.crop }; stored = null; preview = r.thumb; draw();
       };
-      $('#p-nophoto', B).onclick = () => { photo = false; preview = ''; draw(); };
+      $('#p-recrop', B).onclick = async () => {
+        let data, crop;
+        if (photo && photo.full) { data = photo.full; crop = photo.crop; }
+        else {
+          if (!stored) {
+            const end = busy('กำลังโหลดรูป…');
+            try { stored = await S.getPlantPhotoDoc(id); } catch (er) { /* ignore */ }
+            end();
+          }
+          if (!stored || !stored.data) return toast('ไม่พบรูปต้นฉบับ — เลือกรูปใหม่แทน', true);
+          data = stored.data; crop = (photo && photo.crop) || stored.crop;
+        }
+        const r = await openCropper(data, { crop, title: 'ครอปรูปใหม่' });
+        if (!r || s.closed) return;
+        if (photo && photo.full) photo = { thumb: r.thumb, full: photo.full, crop: r.crop }; else photo = { thumb: r.thumb, crop: r.crop };
+        preview = r.thumb; draw();
+      };
+      $('#p-nophoto', B).onclick = () => { photo = false; preview = ''; stored = null; draw(); };
       const del = $('#p-del', B);
       if (del) del.onclick = () => confirmDlg('ลบต้นไม้นี้?', 'ลบ "' + p.name + '" ออกจากระบบ (ประวัติออเดอร์ยังอยู่)', 'ลบ', () => S.deletePlant(id).then(() => { s.close(); toast('ลบแล้ว'); }));
       $('#p-save', s.foot).onclick = () => {

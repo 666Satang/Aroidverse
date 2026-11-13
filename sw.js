@@ -1,11 +1,11 @@
 // sw.js — offline shell + stale-while-revalidate
-const VERSION = 'v3.0.1';
+const VERSION = 'v3.1.0';
 const APP_CACHE = 'plantapp-app-' + VERSION;
 const LIB_CACHE = 'plantapp-lib-' + VERSION;
 const PRECACHE = [
   './', 'index.html', 'styles.css', 'app.js', 'store.js', 'adapter-mock.js', 'adapter-fire.js',
   'invoice.js', 'gemini.js', 'config.js', 'manifest.webmanifest',
-  'ui-core.js', 'ui-home.js', 'ui-orders.js', 'ui-form.js', 'ui-lists.js', 'ui-menu.js',
+  'bridge.js', 'ui-crop.js', 'ui-core.js', 'ui-home.js', 'ui-orders.js', 'ui-form.js', 'ui-lists.js', 'ui-menu.js',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon.png'
 ];
 

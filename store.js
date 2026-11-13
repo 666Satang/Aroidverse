@@ -17,8 +17,14 @@ export const DEFAULT_SETTINGS = {
   invoice_prefix: 'INV',
   invoice_note: 'Thank you for your order!',
   gemini_api_key: '',
-  gemini_model: 'gemini-flash-latest'
+  gemini_model: 'gemini-flash-latest',
+  bridge_url: '',
+  bridge_token: '',
+  reminder_hour: 9,
+  calendar_enabled: true,
+  legacy_imported: false
 };
+const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
 const PAGE = 50;
 const LS_SYNC = 'plantapp_customers_sync';
 
@@ -126,6 +132,7 @@ export function createStore(adapter, opts) {
   };
 
   const subs = new Set();
+  const localCbs = new Set();
   const errHandlers = new Set();
   let notifyQueued = false;
   let localVer = 0;
@@ -224,6 +231,11 @@ export function createStore(adapter, opts) {
     else patch.sold_at = (plant.qty <= 0 && plant.sold_at) ? plant.sold_at : now;
     return patch;
   }
+  // sold_count adjustment (missing = 0, never below 0)
+  function soldCountPatch(plant, delta) {
+    const cur = Number(plant.sold_count) || 0;
+    return { sold_count: Math.max(0, cur + delta) };
+  }
   function stockErr(name, code, left, want, verb) {
     return new Error('สต็อกไม่พอ: ' + name + (code ? ' (' + code + ')' : '') + ' เหลือ ' + left + ' ต้น แต่' + verb + ' ' + want + ' ต้น');
   }
@@ -257,8 +269,27 @@ export function createStore(adapter, opts) {
 
   // ----- commit helper -----------------------------------------------------
   function send(ops) {
-    if (ops.length) adapter.commit(ops);
+    if (!ops.length) return;
+    adapter.commit(ops);
+    emitLocal(ops);
   }
+  // report the ids touched by a local commit to onLocalChange listeners (derived from the ops)
+  function emitLocal(ops) {
+    if (!localCbs.size) return;
+    const ev = { orders: [], plants: [], customers: [], deleted: { plants: [], customers: [] } };
+    const add = (list, id) => { if (list.indexOf(id) < 0) list.push(id); };
+    ops.forEach(o => {
+      const m = /^(orders|plants|customers)\/([^/]+)$/.exec(o.path || '');
+      if (!m) return;
+      const col = m[1], id = m[2];
+      if (o.op === 'delete') { if (col === 'plants' || col === 'customers') add(ev.deleted[col], id); }
+      else if (col === 'customers' && o.data && o.data.deleted === true) add(ev.deleted.customers, id);
+      else add(ev[col], id);
+    });
+    if (!ev.orders.length && !ev.plants.length && !ev.customers.length && !ev.deleted.plants.length && !ev.deleted.customers.length) return;
+    localCbs.forEach(fn => { try { fn(ev); } catch (e) { if (typeof console !== 'undefined') console.error(e); } });
+  }
+  function onLocalChange(fn) { localCbs.add(fn); return () => localCbs.delete(fn); }
   function diff(oldObj, newObj) {
     const patch = {};
     Object.keys(newObj).forEach(k => {
@@ -320,7 +351,10 @@ export function createStore(adapter, opts) {
     const qty = has('qty') ? num(plant.qty, 1) : null;
     if (price !== null && price < 0) throw new Error('ราคาต้องไม่ติดลบ');
     if (qty !== null && (qty < 0 || !Number.isFinite(qty))) throw new Error('จำนวนต้องไม่ติดลบ');
-    if (photo && (typeof photo.thumb !== 'string' || typeof photo.full !== 'string')) throw new Error('ข้อมูลรูปไม่ถูกต้อง');
+    const recrop = !!(photo && typeof photo.full !== 'string' && photo.crop);
+    if (photo && (typeof photo.thumb !== 'string' || (!recrop && typeof photo.full !== 'string'))) throw new Error('ข้อมูลรูปไม่ถูกต้อง');
+    const crop = photo && photo.crop ? normCrop(photo.crop) : null;
+    if (recrop && !str(plant.id)) throw new Error('ข้อมูลรูปไม่ถูกต้อง');
     const now = nowIso();
     const ops = [];
     const id = str(plant.id);
@@ -333,12 +367,12 @@ export function createStore(adapter, opts) {
       const nid = adapter.newId();
       result = {
         id: nid, code, name, detail: str(plant.detail), price: price === null ? 0 : round2(price), qty: q, in_stock: q > 0,
-        thumb: photo ? photo.thumb : '', has_photo: !!photo, note: str(plant.note), created_at: now, updated_at: now
+        thumb: photo ? photo.thumb : '', has_photo: !!photo, note: str(plant.note), sold_count: 0, created_at: now, updated_at: now
       };
       if (q <= 0) result.sold_at = now;
       plants.set(nid, result);
       ops.push({ op: 'set', path: 'plants/' + nid, data: result });
-      if (photo) ops.push({ op: 'set', path: 'plant_photos/' + nid, data: { data: photo.full } });
+      if (photo) ops.push({ op: 'set', path: 'plant_photos/' + nid, data: { data: photo.full, crop } });
       mergeCounters(pc);
       ops.push.apply(ops, counterOps(pc));
     } else {
@@ -349,15 +383,18 @@ export function createStore(adapter, opts) {
       if (price !== null) patch.price = round2(price);
       if (has('note')) patch.note = str(plant.note);
       if (qty !== null && qty !== cur.qty) Object.assign(patch, stockPatch(cur, qty, now));
+      if (recrop && !cur.has_photo) throw new Error('ยังไม่มีรูปให้ครอป');
       if (photo) { patch.thumb = photo.thumb; patch.has_photo = true; }
       else if (photo === false) { patch.thumb = ''; patch.has_photo = false; }
       result = applyPatch(Object.assign({}, cur), patch);
       plants.set(id, result);
       ops.push({ op: 'merge', path: 'plants/' + id, data: patch });
-      if (photo) ops.push({ op: 'set', path: 'plant_photos/' + id, data: { data: photo.full } });
+      if (recrop) ops.push({ op: 'merge', path: 'plant_photos/' + id, data: { crop } });
+      else if (photo) ops.push({ op: 'set', path: 'plant_photos/' + id, data: { data: photo.full, crop } });
       else if (photo === false) ops.push({ op: 'delete', path: 'plant_photos/' + id });
     }
-    if (photo) photoCache.set(result.id, photo.full);
+    if (recrop) { const c = photoCache.get(result.id); if (c) photoCache.set(result.id, { data: c.data, crop }); }
+    else if (photo) photoCache.set(result.id, { data: photo.full, crop });
     else if (photo === false) photoCache.set(result.id, null);
     send(ops);
     changed(true);
@@ -376,18 +413,49 @@ export function createStore(adapter, opts) {
     return { ok: true };
   }
 
-  function getPlantPhoto(id) {
+  // crop = {x, y, size} (fractions): square side = size * min(w,h); x,y = top-left as fraction of (w - side), (h - side). null = centred full square.
+  function normCrop(c) {
+    const f = (v, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : d; };
+    const size = f(c && c.size, 1);
+    return { x: f(c && c.x, 0.5), y: f(c && c.y, 0.5), size: size > 0.01 ? size : 0.01 };
+  }
+  function getPlantPhotoDoc(id) {
     if (photoCache.has(id)) return Promise.resolve(photoCache.get(id));
     const p = plants.get(id);
     if (p && p.name && !p.has_photo) return Promise.resolve(null);
     if (photoInflight.has(id)) return photoInflight.get(id);
     const pr = adapter.getDoc('plant_photos/' + id).then(d => {
-      const v = d && d.data ? d.data : null;
+      const v = d && d.data ? { data: d.data, crop: d.crop || null } : null;
       if (v) photoCache.set(id, v);
       return v;
     }).catch(() => null).then(v => { photoInflight.delete(id); return v; });
     photoInflight.set(id, pr);
     return pr;
+  }
+  function getPlantPhoto(id) { return getPlantPhotoDoc(id).then(d => (d ? d.data : null)); }
+
+  // delete the full photos of plants sold more than `months` months ago (thumb stays)
+  async function purgeOldPhotos(months) {
+    const m = Number(months);
+    if (!(m > 0)) throw new Error('จำนวนเดือนไม่ถูกต้อง');
+    const d = nowFn();
+    const cut = new Date(d.getTime());
+    cut.setUTCMonth(cut.getUTCMonth() - Math.floor(m));
+    const cutoff = cut.toISOString();
+    const docs = await adapter.get({ col: 'plants', where: ['sold_at', '<', cutoff] });
+    const now = nowIso();
+    const ops = [];
+    docs.forEach(doc => {
+      if (!doc || !doc.id || !doc.has_photo || !doc.sold_at || doc.sold_at >= cutoff) return;
+      const patch = { has_photo: false, updated_at: now };
+      const cur = plants.get(doc.id);
+      if (cur) plants.set(doc.id, applyPatch(Object.assign({}, cur), patch));
+      photoCache.delete(doc.id);
+      ops.push({ op: 'delete', path: 'plant_photos/' + doc.id });
+      ops.push({ op: 'merge', path: 'plants/' + doc.id, data: patch });
+    });
+    if (ops.length) { send(ops); changed(true); }
+    return ops.length / 2;
   }
 
   async function loadSoldPlants() {
@@ -560,7 +628,7 @@ export function createStore(adapter, opts) {
     orders.set(id, order);
     Object.keys(ni.need).forEach(pid => {
       const p = planPlant(plan, pid);
-      plan.plantPatches.set(pid, Object.assign({}, plan.plantPatches.get(pid) || {}, stockPatch(p, p.qty - ni.need[pid], plan.now)));
+      plan.plantPatches.set(pid, Object.assign({}, plan.plantPatches.get(pid) || {}, stockPatch(p, p.qty - ni.need[pid], plan.now), soldCountPatch(p, ni.need[pid])));
     });
     return order;
   }
@@ -649,7 +717,7 @@ export function createStore(adapter, opts) {
       const p = getPlant(pid);
       if (p) {
         if (delta > 0 && p.qty < delta) throw stockErr(p.name, p.code, p.qty, delta, 'ต้องเพิ่ม');
-        plantNew.push([pid, stockPatch(p, p.qty - delta, now)]);
+        plantNew.push([pid, Object.assign(stockPatch(p, p.qty - delta, now), soldCountPatch(p, delta))]);
       } else if (isGone(pid)) {
         // plant was deleted: nothing to adjust
       } else if (delta > 0) {
@@ -719,7 +787,7 @@ export function createStore(adapter, opts) {
     Object.keys(back).forEach(pid => {
       const p = getPlant(pid);
       let patch;
-      if (p) patch = stockPatch(p, p.qty + back[pid], now);
+      if (p) patch = Object.assign(stockPatch(p, p.qty + back[pid], now), soldCountPatch(p, -back[pid]));
       else if (isGone(pid)) return;
       else { patch = { qty: back[pid], in_stock: true, updated_at: now, sold_at: DELETE }; ensure.push(pid); }
       const cur = plants.get(pid);
@@ -857,11 +925,14 @@ export function createStore(adapter, opts) {
   }
 
   // ----- legacy import (rows in the OLD sheet format) -----------------------
-  function importLegacy(data) {
+  // opts.existing = result of exportAll(): rows whose code already exists (locally or there) are skipped.
+  function importLegacy(data, opts2) {
     data = data || {};
+    const existing = (opts2 && opts2.existing) || null;
     const now = nowIso();
     const ops = [];
-    const out = { plants: 0, customers: 0, orders: 0 };
+    const out = { plants: 0, customers: 0, orders: 0, skipped: 0 };
+    if (existing && existing.counters) mergeCounters(existing.counters);
     const pc = { plant: counters.plant || 0, customer: counters.customer || 0, order: counters.order || 0, inv: {} };
     const plantByCode = new Map();
     plants.forEach(p => { if (p.code) plantByCode.set(p.code, p.id); });
@@ -869,12 +940,19 @@ export function createStore(adapter, opts) {
     customers.forEach(c => { if (c.code) custByCode.set(c.code, c.id); });
     const orderCodes = new Set();
     orders.forEach(o => { if (o.code) orderCodes.add(o.code); });
+    if (existing) {
+      (existing.plants || []).forEach(p => { if (p && p.code && !plantByCode.has(p.code)) plantByCode.set(p.code, p.id); });
+      (existing.customers || []).forEach(c => { if (c && c.code && !custByCode.has(c.code)) custByCode.set(c.code, c.id); });
+      (existing.orders || []).forEach(o => { if (o && o.code) orderCodes.add(o.code); });
+    }
+    const newPlants = new Map();   // code -> doc imported in this run
     const bump = (key, prefix, code) => { if (String(code).indexOf(prefix) === 0) pc[key] = Math.max(pc[key], codeNum(code)); };
     const dstr = v => { const s = str(v); const m = /^(\d{4}-\d{2}-\d{2})/.exec(s); return m ? m[1] : ''; };
 
     (data.plants || []).forEach(r => {
       const code = str(r.plant_id || r.code);
-      if (!code || plantByCode.has(code) || !str(r.name)) return;
+      if (!code || !str(r.name)) return;
+      if (plantByCode.has(code)) { out.skipped++; return; }
       const qty = num(r.qty, 0);
       const created = str(r.created_at) || now, updated = str(r.updated_at) || created;
       const doc = {
@@ -883,13 +961,14 @@ export function createStore(adapter, opts) {
       };
       if (str(r.photo_url)) doc.legacy_photo_url = str(r.photo_url);
       if (qty <= 0) doc.sold_at = updated;
-      plants.set(doc.id, doc); plantByCode.set(code, doc.id);
+      plants.set(doc.id, doc); plantByCode.set(code, doc.id); newPlants.set(code, doc);
       ops.push({ op: 'set', path: 'plants/' + doc.id, data: doc });
       bump('plant', 'P', code); out.plants++;
     });
     (data.customers || []).forEach(r => {
       const code = str(r.customer_id || r.code);
-      if (!code || custByCode.has(code) || !str(r.name)) return;
+      if (!code || !str(r.name)) return;
+      if (custByCode.has(code)) { out.skipped++; return; }
       const created = str(r.created_at) || now;
       const doc = {
         id: adapter.newId(), code, name: str(r.name), channel: normChannel(r.channel), contact: str(r.contact), country: str(r.country),
@@ -904,7 +983,8 @@ export function createStore(adapter, opts) {
     (data.payments || []).forEach(r => { if (r && r.order_id) (paysBy[r.order_id] = paysBy[r.order_id] || []).push(r); });
     (data.orders || []).forEach(r => {
       const code = str(r.order_id || r.code);
-      if (!code || orderCodes.has(code)) return;
+      if (!code) return;
+      if (orderCodes.has(code)) { out.skipped++; return; }
       const od = dstr(r.order_date) || today();
       const rawItems = Array.isArray(r.items) ? r.items : (itemsBy[code] || []);
       const items = rawItems.map(it => {
@@ -929,19 +1009,25 @@ export function createStore(adapter, opts) {
         created_at: created, updated_at: str(r.updated_at) || created
       });
       orders.set(order.id, order); orderCodes.add(code);
+      if (order.status !== 'cancelled') order.items.forEach(it => { const nd = it.code && newPlants.get(it.code); if (nd) nd.sold_count = (nd.sold_count || 0) + it.qty; });
       ops.push({ op: 'set', path: 'orders/' + order.id, data: order });
       bump('order', 'O', code); out.orders++;
       const m = /-(\d{6})-(\d+)$/.exec(order.invoice_no);
       if (m) pc.inv[m[1]] = Math.max(pc.inv[m[1]] || 0, parseInt(m[2], 10));
     });
+    const s = {};
     if (data.settings && typeof data.settings === 'object') {
-      const s = {};
-      Object.keys(DEFAULT_SETTINGS).forEach(k => { if (data.settings[k] !== undefined && data.settings[k] !== '') s[k] = String(data.settings[k]); });
-      if (Object.keys(s).length) {
-        settingsDoc = Object.assign({}, settingsDoc || {}, s); recomputeSettings();
-        ops.push({ op: 'merge', path: 'settings/main', data: s });
-      }
+      // old settings only fill fields still at their default / empty value
+      LEGACY_SETTING_KEYS.forEach(k => {
+        const v = data.settings[k];
+        if (v === undefined || v === null || v === '') return;
+        const curV = state.settings[k];
+        if (curV === '' || curV === undefined || curV === DEFAULT_SETTINGS[k]) s[k] = String(v);
+      });
     }
+    s.legacy_imported = true;
+    settingsDoc = Object.assign({}, settingsDoc || {}, s); recomputeSettings();
+    ops.push({ op: 'merge', path: 'settings/main', data: s });
     const cp = {};
     ['plant', 'customer', 'order'].forEach(k => { if (pc[k] > (counters[k] || 0)) cp[k] = pc[k]; });
     const inv = {};
@@ -1064,8 +1150,8 @@ export function createStore(adapter, opts) {
 
   return {
     start, stop, subscribe, state, onError, checkRollover,
-    getPlant, getCustomer, getOrder, balance,
-    saveSettings, savePlant, deletePlant, getPlantPhoto, loadSoldPlants, saveCustomer, deleteCustomer,
+    onLocalChange, getPlant, getCustomer, getOrder, balance,
+    saveSettings, savePlant, deletePlant, getPlantPhoto, getPlantPhotoDoc, purgeOldPhotos, loadSoldPlants, saveCustomer, deleteCustomer,
     createOrder, createOrdersBatch, updateOrder, updateOrderItems, recordPayment, deletePayment,
     markShipped, unmarkShipped, cancelOrder,
     loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, monthStats, exportAll, importLegacy

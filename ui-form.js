@@ -1,12 +1,12 @@
 // Item picker, new-order form (incl. quick walk-in sale), item editor, photo import.
-import { ctx, $, esc, num, str, sum, debounce, money, icon, chIcon, thumbHTML, toast, openSheet, dialog, bind, CH, WALKIN_NAME, errMsg, busy, today, findOrder, fmtDate } from './ui-core.js';
+import { ctx, $, esc, num, str, sum, debounce, money, icon, chIcon, thumbHTML, toast, openSheet, dialog, bind, CH, WALKIN_NAME, errMsg, busy, today, findOrder, fmtDate, sortBarHTML, getPickSort, setPickSort, sortPlants, soldHint } from './ui-core.js';
 
 // ---------------------------------------------------------------- item picker
 // f = {items:[{plant_id,code,name,unit_price,qty,max?,custom?}], bonus:{plantId:qty already in this order}}
 export function itemsPicker(host, f, onChange) {
   f.bonus = f.bonus || {};
   host.innerHTML = '<div data-r="lines"></div>' +
-    '<div class="search" style="margin-top:12px"><span>' + icon('search') + '</span><input data-r="q" placeholder="ค้นหาต้นไม้ ชื่อหรือรหัส" enterkeyhint="search" autocomplete="off"></div>' +
+    '<div class="search" style="margin-top:12px"><span>' + icon('search') + '</span><input data-r="q" placeholder="ค้นหาต้นไม้ ชื่อหรือรหัส" enterkeyhint="search" autocomplete="off"></div>' + sortBarHTML() +
     '<div class="picklist" data-r="res" style="margin-top:8px"></div>' +
     '<button class="btn sec block" data-act="custom" style="margin-top:10px">' + icon('plus') + ' เพิ่มรายการเอง</button>';
   const R = (k) => host.querySelector('[data-r="' + k + '"]');
@@ -27,9 +27,9 @@ export function itemsPicker(host, f, onChange) {
   }
   function drawRes() {
     const q = R('q').value.trim().toLowerCase();
-    const l = ctx.store.state.plants.filter((p) => num(p.qty) > 0 && stockOf(p.id) > lineQty(p.id) && (!q || (str(p.name) + ' ' + str(p.code) + ' ' + str(p.detail)).toLowerCase().includes(q))).slice(0, 25);
+    const l = sortPlants(ctx.store.state.plants.filter((p) => num(p.qty) > 0 && stockOf(p.id) > lineQty(p.id) && (!q || (str(p.name) + ' ' + str(p.code) + ' ' + str(p.detail)).toLowerCase().includes(q)))).slice(0, 25);
     R('res').hidden = false;
-    R('res').innerHTML = l.length ? l.map((p) => '<button class="pick" data-act="add" data-id="' + esc(p.id) + '">' + thumbHTML(p, 'sm') + '<span class="grow"><span class="nm trunc" style="display:block">' + esc(p.name) + '</span><span class="sub">' + esc(p.code) + ' · เหลือ ' + num(p.qty) + '</span></span><b class="num">' + money(p.price) + '</b></button>').join('')
+    R('res').innerHTML = l.length ? l.map((p) => '<button class="pick" data-act="add" data-id="' + esc(p.id) + '">' + thumbHTML(p, 'sm') + '<span class="grow"><span class="nm trunc" style="display:block">' + esc(p.name) + '</span><span class="sub">' + esc(p.code) + ' · เหลือ ' + num(p.qty) + esc(soldHint(p)) + '</span></span><b class="num">' + money(p.price) + '</b></button>').join('')
       : '<div class="sub" style="padding:14px;text-align:center">' + (q ? 'ไม่พบต้นไม้ที่ค้นหา' : 'ไม่มีต้นไม้ในสต็อกที่เลือกได้') + '</div>';
   }
   function addPlant(p) {
@@ -45,6 +45,7 @@ export function itemsPicker(host, f, onChange) {
     dec: (d) => { const it = f.items[+d.i]; if (it.qty > 1) { it.qty--; drawLines(); drawRes(); onChange(); } },
     custom: () => { f.items.push({ plant_id: '', code: '', name: '', unit_price: 0, qty: 1, custom: true }); drawLines(); onChange(); const el = host.querySelector('[data-in="' + (f.items.length - 1) + '"]'); if (el) el.focus(); },
   });
+  host.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.sort !== undefined) { setPickSort(e.target.value); drawRes(); } });
   host.addEventListener('input', (e) => {
     const t = e.target;
     if (t.dataset.ip !== undefined) { const it = f.items[+t.dataset.ip]; it.unit_price = num(t.value); const lt = host.querySelector('[data-lt="' + t.dataset.ip + '"]'); if (lt) lt.textContent = money(it.unit_price * it.qty); onChange(); }
@@ -250,13 +251,14 @@ export function openItemsEditor(oid) {
 // ---------------------------------------------------------------- photo import
 function plantPickDlg(cb) {
   let q = '';
-  const d = dialog('เลือกต้นไม้ในสต็อก', '<div class="search"><span>' + icon('search') + '</span><input id="pp-q" placeholder="ค้นหาชื่อหรือรหัส" autocomplete="off"></div><div class="picklist" id="pp-l" style="max-height:46vh"></div><button class="btn ghost block" data-act="none">ไม่ตรงกับสต็อก / รายการพิเศษ</button>', '', null, { noCancel: true });
+  const d = dialog('เลือกต้นไม้ในสต็อก', '<div class="search"><span>' + icon('search') + '</span><input id="pp-q" placeholder="ค้นหาชื่อหรือรหัส" autocomplete="off"></div>' + sortBarHTML() + '<div class="picklist" id="pp-l" style="max-height:46vh"></div><button class="btn ghost block" data-act="none">ไม่ตรงกับสต็อก / รายการพิเศษ</button>', '', null, { noCancel: true });
   const fill = () => {
-    const l = ctx.store.state.plants.filter((p) => num(p.qty) > 0 && (!q || (str(p.name) + ' ' + str(p.code)).toLowerCase().includes(q))).slice(0, 25);
-    $('#pp-l', d.el).innerHTML = l.length ? l.map((p) => '<button class="pick" data-act="pk" data-id="' + esc(p.id) + '">' + thumbHTML(p, 'sm') + '<span class="grow"><span class="nm trunc" style="display:block">' + esc(p.name) + '</span><span class="sub">' + esc(p.code) + '</span></span><b class="num">' + money(p.price) + '</b></button>').join('') : '<div class="sub" style="padding:14px;text-align:center">ไม่พบต้นไม้</div>';
+    const l = sortPlants(ctx.store.state.plants.filter((p) => num(p.qty) > 0 && (!q || (str(p.name) + ' ' + str(p.code)).toLowerCase().includes(q)))).slice(0, 25);
+    $('#pp-l', d.el).innerHTML = l.length ? l.map((p) => '<button class="pick" data-act="pk" data-id="' + esc(p.id) + '">' + thumbHTML(p, 'sm') + '<span class="grow"><span class="nm trunc" style="display:block">' + esc(p.name) + '</span><span class="sub">' + esc(p.code) + esc(soldHint(p)) + '</span></span><b class="num">' + money(p.price) + '</b></button>').join('') : '<div class="sub" style="padding:14px;text-align:center">ไม่พบต้นไม้</div>';
   };
   fill();
   $('#pp-q', d.el).oninput = (e) => { q = e.target.value.trim().toLowerCase(); fill(); };
+  d.el.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.sort !== undefined) { setPickSort(e.target.value); fill(); } });
   bind(d.el, { pk: (x) => { const p = ctx.store.getPlant(x.id); d.close(); cb(p || null); }, none: () => { d.close(); cb(null); } });
 }
 

@@ -1,5 +1,5 @@
 // Menu tab, reports (CSV + print), settings, backup.
-import { ctx, $, esc, num, str, sum, money, fmtN, fmtDate, MON, MONTHS, icon, toast, openSheet, dialog, bind, errMsg, busy, emptyHTML, shareOrDownload, downloadBlob, closeAllSheets } from './ui-core.js';
+import { ctx, $, esc, num, str, sum, money, fmtN, fmtDate, MON, MONTHS, icon, toast, openSheet, dialog, confirmDlg, bind, errMsg, busy, emptyHTML, shareOrDownload, downloadBlob, closeAllSheets } from './ui-core.js';
 import { orderCard, openOrder } from './ui-orders.js';
 
 // ---------------------------------------------------------------- menu root
@@ -119,12 +119,135 @@ export const settingsView = {
       '<div class="card"><div class="h3">อ่านรูปจดขายด้วย Gemini</div><label class="fld">Gemini API key</label><div class="pwrap"><input data-k="gemini_api_key" id="s-gkey" type="password" value="' + esc(st.gemini_api_key) + '" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="peek" id="s-gshow" type="button">แสดง</button></div>' +
       '<label class="fld">โมเดล</label><input data-k="gemini_model" value="' + esc(st.gemini_model) + '" autocomplete="off" autocapitalize="off">' +
       '<p class="sub" style="margin-top:12px">1. เปิด aistudio.google.com/apikey ด้วยบัญชี Google<br>2. กด Create API key<br>3. คัดลอกมาวางที่ช่องด้านบน แล้วกดบันทึก<br>ใช้ฟรี รูปจะถูกส่งไปให้ Google อ่านเฉพาะตอนกดนำเข้าเท่านั้น</p></div>' +
+      bridgeHTML(st) + legacyHTML(st) + purgeHTML() +
       '<button class="btn block" id="s-save">บันทึกการตั้งค่า</button>';
     $('#s-gshow', el).onclick = (e) => { const i = $('#s-gkey', el), sh = i.type === 'password'; i.type = sh ? 'text' : 'password'; e.target.textContent = sh ? 'ซ่อน' : 'แสดง'; };
     $('#s-save', el).onclick = () => {
       const o = {}; el.querySelectorAll('[data-k]').forEach((x) => { o[x.dataset.k] = x.value.trim(); });
+      Object.assign(o, readBridge(el));
       ctx.store.saveSettings(o).then(() => { toast('บันทึกการตั้งค่าแล้ว'); ctx.nav.menu(null); }, (e) => toast(errMsg(e), true));
     };
+    initBridge(el);
   },
   update() {},
 };
+
+// ---------------------------------------------------------------- bridge (Google Sheet + Calendar), legacy import, photo purge
+const lsGetS = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const lsSetS = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
+const SHEET_KEY = 'plantapp_sheet_url';
+const hourOf = (v) => { const n = Math.round(num(v)); return Math.min(23, Math.max(0, n)); };
+
+function bridgeHTML(st) {
+  const hr = st.reminder_hour == null || st.reminder_hour === '' ? 9 : hourOf(st.reminder_hour);
+  return '<div class="card" id="s-bridge"><div class="h3">Google Sheet และแจ้งเตือน</div>' +
+    '<label class="fld">URL เว็บแอป (Apps Script)</label><input id="b-url" value="' + esc(st.bridge_url) + '" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url">' +
+    '<label class="fld">โทเคน</label><div class="pwrap"><input id="b-tok" type="password" value="' + esc(st.bridge_token) + '" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="peek" id="b-show" type="button">แสดง</button></div>' +
+    '<label class="switch" style="margin-top:10px"><input type="checkbox" id="b-cal"' + (st.calendar_enabled === false ? '' : ' checked') + '> แจ้งเตือนส่งของใน Google Calendar</label>' +
+    '<label class="fld">เวลาแจ้งเตือน (ชั่วโมง 0–23)</label><input id="b-hr" type="number" inputmode="numeric" min="0" max="23" value="' + hr + '">' +
+    '<div class="grid2" style="margin-top:14px"><button class="btn sec sm" id="b-test">ทดสอบการเชื่อมต่อ</button><button class="btn sec sm" id="b-all">ซิงค์ทั้งหมดตอนนี้</button></div>' +
+    '<a class="btn ghost sm block" id="b-open" target="_blank" rel="noopener" style="margin-top:8px" hidden>เปิด Google Sheet</a>' +
+    '<div class="prog" id="b-prog" hidden><i></i></div><div class="bstat" id="b-stat" aria-live="polite"></div>' +
+    '<p class="sub" style="margin-top:10px">ออเดอร์ ต้นไม้ และลูกค้าจะถูกส่งไปที่ Google Sheet เองเบื้องหลัง (ไม่ทำให้แอปช้า) และสร้างนัดส่งของใน Google Calendar<br>วิธีตั้งค่า: เปิด Google Sheet → รันฟังก์ชัน setup ใน Apps Script → คัดลอกโทเคนจากแท็บ Bridge และ URL ของเว็บแอปจากหน้า Deploy มาวางที่นี่ → กดทดสอบ → กดบันทึกการตั้งค่า</p></div>';
+}
+function legacyHTML(st) {
+  return '<div class="card" id="s-legacy" hidden><div class="h3">ย้ายข้อมูลจากระบบเดิม</div>' +
+    '<p class="sub" id="l-msg" style="margin-bottom:12px">ดึงต้นไม้ ลูกค้า และออเดอร์จาก Google Sheet ของระบบเดิมเข้ามาในแอปนี้ (เลขที่บิลและรหัสเดิมจะคงไว้ ข้ามรายการที่มีอยู่แล้ว)</p>' +
+    '<div id="l-done" class="pill p-mint" style="margin-bottom:12px" hidden>ย้ายแล้ว</div><button class="btn sec block" id="l-go">ดึงข้อมูลจากระบบเดิม</button></div>';
+}
+function purgeHTML() {
+  return '<div class="card" id="s-purge"><div class="h3">ล้างรูปต้นที่ขายไปนานแล้ว</div>' +
+    '<p class="sub" style="margin-bottom:12px">ลบรูปขนาดใหญ่ของต้นที่ขายหมดไปนานแล้ว เพื่อประหยัดพื้นที่ — รูปย่อยังอยู่ ออเดอร์ไม่กระทบ</p>' +
+    '<div class="seg" id="u-seg"><button class="on" data-m="6">เกิน 6 เดือน</button><button data-m="12">เกิน 12 เดือน</button></div>' +
+    '<button class="btn warn block" id="u-go" style="margin-top:12px">' + icon('trash') + ' ล้างรูปต้น</button></div>';
+}
+function readBridge(el) {
+  return { bridge_url: $('#b-url', el).value.trim(), bridge_token: $('#b-tok', el).value.trim(), calendar_enabled: $('#b-cal', el).checked, reminder_hour: hourOf($('#b-hr', el).value) };
+}
+const hm = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok' }); };
+
+function initBridge(el) {
+  const S = ctx.store, B = ctx.bridge, g = (id) => $('#' + id, el);
+  g('b-show').onclick = (e) => { const i = g('b-tok'), sh = i.type === 'password'; i.type = sh ? 'text' : 'password'; e.target.textContent = sh ? 'ซ่อน' : 'แสดง'; };
+  const saveB = () => S.saveSettings(readBridge(el));
+  const typedConfigured = () => !!(g('b-url').value.trim() && g('b-tok').value.trim());
+  const showSheet = (u) => { const a = g('b-open'); if (u && /^https:\/\//i.test(u)) { a.href = u; a.hidden = false; } else a.hidden = true; };
+  showSheet(lsGetS(SHEET_KEY));
+
+  const drawLegacy = () => {
+    const st = S.state.settings || {};
+    g('s-legacy').hidden = !typedConfigured();
+    g('l-done').hidden = !st.legacy_imported;
+    g('l-go').textContent = st.legacy_imported ? 'ดึงข้อมูลจากระบบเดิมอีกครั้ง' : 'ดึงข้อมูลจากระบบเดิม';
+  };
+  const drawStat = () => {
+    const box = g('b-stat');
+    if (!B) { box.textContent = 'ฟีเจอร์นี้ยังไม่พร้อมใช้งาน'; return; }
+    const s = B.status(), parts = [];
+    if (!typedConfigured() && !s.configured) { box.className = 'bstat'; box.textContent = 'ยังไม่ได้เชื่อมต่อ — ใส่ URL และโทเคนด้านบน'; return; }
+    parts.push(s.configured ? 'เชื่อมต่อแล้ว' : 'ยังไม่ได้บันทึกการตั้งค่า');
+    if (s.pending) parts.push('รอซิงค์ ' + s.pending + ' รายการ');
+    if (s.busy) parts.push('กำลังซิงค์…');
+    if (s.lastOk) parts.push('ซิงค์ล่าสุด ' + hm(s.lastOk));
+    if (s.lastError) parts.push('ข้อผิดพลาดล่าสุด: ' + s.lastError);
+    box.className = 'bstat' + (s.lastError ? ' bad' : ''); box.textContent = parts.join(' · ');
+  };
+  drawStat(); drawLegacy();
+  if (B) {
+    const off = B.onStatus(() => { if (!el.isConnected) { if (off) off(); return; } drawStat(); drawLegacy(); });
+  }
+  el.addEventListener('input', (e) => { if (e.target.id === 'b-url' || e.target.id === 'b-tok') { drawStat(); drawLegacy(); } });
+
+  g('b-test').onclick = async () => {
+    if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
+    if (!typedConfigured()) return toast('กรุณาใส่ URL และโทเคนก่อน', true);
+    const btn = g('b-test'); btn.disabled = true; btn.textContent = 'กำลังทดสอบ…';
+    try {
+      await saveB();
+      const r = await B.test();
+      if (r && r.sheet_url) { lsSetS(SHEET_KEY, r.sheet_url); showSheet(r.sheet_url); }
+      toast('เชื่อมต่อสำเร็จ');
+    } catch (er) { toast(errMsg(er), true); }
+    btn.disabled = false; btn.textContent = 'ทดสอบการเชื่อมต่อ'; drawStat(); drawLegacy();
+  };
+  g('b-all').onclick = async () => {
+    if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
+    if (!typedConfigured()) return toast('กรุณาใส่ URL และโทเคนก่อน', true);
+    const btn = g('b-all'), prog = g('b-prog'), bar = $('i', prog); btn.disabled = true; prog.hidden = false; bar.style.width = '3%';
+    try {
+      await saveB();
+      const r = await B.pushAll((done, total) => { bar.style.width = Math.max(3, Math.round(100 * done / Math.max(1, total))) + '%'; btn.textContent = 'กำลังซิงค์ ' + done + '/' + total; });
+      bar.style.width = '100%';
+      toast('ซิงค์แล้ว: ออเดอร์ ' + ((r && r.orders) || 0) + ' · ต้นไม้ ' + ((r && r.plants) || 0) + ' · ลูกค้า ' + ((r && r.customers) || 0));
+    } catch (er) { toast(errMsg(er), true); }
+    btn.disabled = false; btn.textContent = 'ซิงค์ทั้งหมดตอนนี้'; setTimeout(() => { prog.hidden = true; }, 800); drawStat();
+  };
+
+  g('l-go').onclick = async () => {
+    if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
+    const btn = g('l-go'); btn.disabled = true; btn.textContent = 'กำลังดึงข้อมูล…';
+    let data = null;
+    try { await saveB(); data = await B.fetchLegacy(); } catch (er) { toast(errMsg(er), true); }
+    btn.disabled = false; drawLegacy();
+    if (!data) return;
+    const n = (k) => (Array.isArray(data[k]) ? data[k].length : 0);
+    dialog('ย้ายข้อมูลจากระบบเดิม?', '<p>พบข้อมูลในระบบเดิม</p><div class="card flat"><div class="kv"><span>ต้นไม้</span><b>' + n('plants') + '</b></div><div class="kv"><span>ลูกค้า</span><b>' + n('customers') + '</b></div><div class="kv"><span>ออเดอร์</span><b>' + n('orders') + '</b></div></div><p class="sub">รายการที่มีรหัสซ้ำกับที่มีในแอปแล้วจะถูกข้าม จึงกดซ้ำได้อย่างปลอดภัย</p>', 'ย้ายข้อมูล', () => {
+      const end = busy('กำลังย้ายข้อมูล…');
+      return (async () => {
+        try {
+          const existing = await S.exportAll();
+          const r = await S.importLegacy(data, { existing });
+          toast('ย้ายแล้ว: ต้นไม้ ' + r.plants + ' · ลูกค้า ' + r.customers + ' · ออเดอร์ ' + r.orders + (r.skipped ? ' · ข้าม ' + r.skipped : ''));
+          drawLegacy();
+        } catch (er) { toast(errMsg(er), true); return false; } finally { end(); }
+      })();
+    });
+  };
+
+  let months = 6;
+  g('u-seg').onclick = (e) => { const b = e.target.closest('[data-m]'); if (!b) return; months = +b.dataset.m; g('u-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); };
+  g('u-go').onclick = () => confirmDlg('ล้างรูปต้นที่ขายเกิน ' + months + ' เดือน?', 'รูปใหญ่ของต้นที่ขายหมดเกิน ' + months + ' เดือนจะถูกลบถาวร (รูปย่อยยังอยู่) ย้อนกลับไม่ได้', 'ล้างรูป', () => {
+    const end = busy('กำลังล้างรูป…');
+    return S.purgeOldPhotos(months).then((n) => { toast(n ? 'ล้างรูปแล้ว ' + n + ' ต้น' : 'ไม่มีรูปที่เข้าเงื่อนไข'); }, (er) => { toast(errMsg(er), true); return false; }).finally(end);
+  });
+}
