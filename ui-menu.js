@@ -119,7 +119,7 @@ export const settingsView = {
       '<div class="card"><div class="h3">อ่านรูปจดขายด้วย Gemini</div><label class="fld">Gemini API key</label><div class="pwrap"><input data-k="gemini_api_key" id="s-gkey" type="password" value="' + esc(st.gemini_api_key) + '" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="peek" id="s-gshow" type="button">แสดง</button></div>' +
       '<label class="fld">โมเดล</label><input data-k="gemini_model" value="' + esc(st.gemini_model) + '" autocomplete="off" autocapitalize="off">' +
       '<p class="sub" style="margin-top:12px">1. เปิด aistudio.google.com/apikey ด้วยบัญชี Google<br>2. กด Create API key<br>3. คัดลอกมาวางที่ช่องด้านบน แล้วกดบันทึก<br>ใช้ฟรี รูปจะถูกส่งไปให้ Google อ่านเฉพาะตอนกดนำเข้าเท่านั้น</p></div>' +
-      bridgeHTML(st) + legacyHTML(st) + purgeHTML() +
+      bridgeHTML(st) + pushHTML(st) + legacyHTML(st) + purgeHTML() +
       '<button class="btn block" id="s-save">บันทึกการตั้งค่า</button>';
     $('#s-gshow', el).onclick = (e) => { const i = $('#s-gkey', el), sh = i.type === 'password'; i.type = sh ? 'text' : 'password'; e.target.textContent = sh ? 'ซ่อน' : 'แสดง'; };
     $('#s-save', el).onclick = () => {
@@ -128,6 +128,7 @@ export const settingsView = {
       ctx.store.saveSettings(o).then(() => { toast('บันทึกการตั้งค่าแล้ว'); ctx.nav.menu(null); }, (e) => toast(errMsg(e), true));
     };
     initBridge(el);
+    initPush(el);
   },
   update() {},
 };
@@ -150,6 +151,18 @@ function bridgeHTML(st) {
     '<div class="prog" id="b-prog" hidden><i></i></div><div class="bstat" id="b-stat" aria-live="polite"></div>' +
     '<p class="sub" style="margin-top:10px">ออเดอร์ ต้นไม้ และลูกค้าจะถูกส่งไปที่ Google Sheet เองเบื้องหลัง (ไม่ทำให้แอปช้า) และสร้างนัดส่งของใน Google Calendar<br>วิธีตั้งค่า: เปิด Google Sheet → รันฟังก์ชัน setup ใน Apps Script → คัดลอกโทเคนจากแท็บ Bridge และ URL ของเว็บแอปจากหน้า Deploy มาวางที่นี่ → กดทดสอบ → กดบันทึกการตั้งค่า</p></div>';
 }
+function pushHTML(st) {
+  const row = (k, label) => '<div class="pushrow"><label class="switch"><input type="checkbox" id="p-' + k + '-on"' + (st['push_' + k + '_enabled'] === false ? '' : ' checked') + '> ' + label + '</label>' +
+    '<input type="time" id="p-' + k + '-t" value="' + esc(st['push_' + k + '_time'] || (k === 'before' ? '18:00' : '08:00')) + '" aria-label="เวลา' + label + '"></div>';
+  return '<div class="card" id="s-push"><div class="h3">แจ้งเตือน Push ส่งของ</div>' +
+    '<div class="bstat" id="p-stat" style="margin-top:0" aria-live="polite">กำลังตรวจสอบ…</div>' +
+    '<label class="fld">Web Push key (VAPID)</label><input data-k="push_vapid_key" id="p-key" value="' + esc(st.push_vapid_key) + '" placeholder="B…" autocomplete="off" autocapitalize="off" spellcheck="false">' +
+    row('before', 'เตือนวันก่อนส่ง') + row('day', 'เตือนวันส่ง') +
+    '<div class="bstat" id="p-hint" hidden></div>' +
+    '<button class="btn sec sm block" id="p-on" type="button" style="margin-top:14px">เปิดการแจ้งเตือนบนเครื่องนี้</button><button class="btn sec sm block" id="p-off" type="button" style="margin-top:14px" hidden>ปิดบนเครื่องนี้</button>' +
+    '<button class="btn ghost sm block" id="p-test" type="button" style="margin-top:8px">ส่งแจ้งเตือนทดสอบ</button>' +
+    '<p class="sub" style="margin-top:10px">วิธีตั้งค่า (ทำครั้งเดียว)<br>1. Firebase Console → Project settings → Cloud Messaging → Web configuration → Generate key pair แล้วคัดลอกมาวางที่ช่อง Web Push key → กดบันทึกการตั้งค่า<br>2. สร้าง Service Account key (Project settings → Service accounts → Generate new private key) วางลงในแท็บ Bridge ของชีต แล้วรันฟังก์ชัน setupPush<br>3. กลับมาที่นี่ กด "เปิดการแจ้งเตือนบนเครื่องนี้" ในแต่ละเครื่อง แล้วกด "ส่งแจ้งเตือนทดสอบ"<br>iPhone/iPad: ต้องเพิ่มแอปไว้หน้าจอโฮม (แชร์ → เพิ่มลงหน้าจอโฮม) แล้วเปิดจากไอคอนนั้น</p></div>';
+}
 function legacyHTML(st) {
   return '<div class="card" id="s-legacy" hidden><div class="h3">ย้ายข้อมูลจากระบบเดิม</div>' +
     '<p class="sub" id="l-msg" style="margin-bottom:12px">ดึงต้นไม้ ลูกค้า และออเดอร์จาก Google Sheet ของระบบเดิมเข้ามาในแอปนี้ (เลขที่บิลและรหัสเดิมจะคงไว้ ข้ามรายการที่มีอยู่แล้ว)</p>' +
@@ -164,6 +177,7 @@ function purgeHTML() {
 function readBridge(el) {
   return { bridge_url: $('#b-url', el).value.trim(), bridge_token: $('#b-tok', el).value.trim(), calendar_enabled: $('#b-cal', el).checked, reminder_hour: hourOf($('#b-hr', el).value) };
 }
+const hhmm = (v, d) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')) ? String(v) : d);
 const hm = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok' }); };
 
 function initBridge(el) {
@@ -250,4 +264,93 @@ function initBridge(el) {
     const end = busy('กำลังล้างรูป…');
     return S.purgeOldPhotos(months).then((n) => { toast(n ? 'ล้างรูปแล้ว ' + n + ' ต้น' : 'ไม่มีรูปที่เข้าเงื่อนไข'); }, (er) => { toast(errMsg(er), true); return false; }).finally(end);
   });
+}
+
+// ---------------------------------------------------------------- push notifications (SPEC5)
+const PUSH_LS = 'plantapp_push_token';
+function initPush(el) {
+  const S = ctx.store, g = (id) => $('#' + id, el);
+  let pm = null;
+  // preload so Notification.requestPermission() can be the first call inside the tap (iOS gesture rule)
+  if (!ctx.demo) import('./push.js').then((m) => { pm = m; if (el.isConnected) draw(); }).catch(() => { if (el.isConnected) draw(); });
+  let sup = null;
+  const bridgeOn = () => !!(ctx.bridge && ctx.bridge.status().configured);
+  const cfgBody = () => ({ before_enabled: g('p-before-on').checked, before_time: hhmm(g('p-before-t').value, '18:00'), day_enabled: g('p-day-on').checked, day_time: hhmm(g('p-day-t').value, '08:00') });
+  const hint = (t, bad) => { const h = g('p-hint'); h.hidden = !t; h.textContent = t || ''; h.className = 'bstat' + (bad ? ' bad' : ''); };
+  function draw() {
+    const on = !!lsGetS(PUSH_LS) && !ctx.demo, stat = g('p-stat');
+    let t = '', bad = false;
+    if (ctx.demo) t = 'โหมดตัวอย่าง — การแจ้งเตือนใช้ได้เฉพาะในแอปจริง';
+    else if (!sup) t = 'กำลังตรวจสอบ…';
+    else if (sup.reason === 'ios-not-installed') { t = 'ต้องเปิดแอปจากไอคอนบนหน้าจอโฮมก่อน (iPhone/iPad)'; bad = true; }
+    else if (sup.reason === 'unsupported') { t = 'เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน'; bad = true; }
+    else if (sup.reason === 'denied') { t = 'ถูกปิดสิทธิ์ในตั้งค่าเครื่อง — เปิดสิทธิ์แจ้งเตือนของแอปนี้ในตั้งค่าเครื่องก่อน'; bad = true; }
+    else t = 'เครื่องนี้รองรับการแจ้งเตือน';
+    if (on && sup && sup.supported) t += ' · เครื่องนี้เปิดแจ้งเตือนแล้ว';
+    stat.className = 'bstat' + (bad ? ' bad' : ''); stat.textContent = t;
+    g('p-on').hidden = on; g('p-off').hidden = !on;
+    if (!ctx.demo && !bridgeOn() && !(g('p-hint').dataset.k === 'cfg')) { hint('ต้องตั้งค่า Google Sheet ในส่วนด้านบนก่อน (URL เว็บแอปและโทเคน แล้วกดบันทึก) ถึงจะใช้แจ้งเตือนได้', false); }
+    else if (bridgeOn() && g('p-hint').dataset.k !== 'cfg') hint('');
+  }
+  if (ctx.demo) { draw(); } else { draw(); import('./push.js').then((m) => m.pushSupport()).then((r) => { sup = r; if (el.isConnected) draw(); }, () => { sup = { supported: false, reason: 'unsupported' }; if (el.isConnected) draw(); }); }
+
+  const noBridge = () => { if (bridgeOn()) return false; toast('ต้องตั้งค่า Google Sheet ก่อน (ส่วนด้านบน)', true); return true; };
+  const sendCfg = async () => {
+    const h = g('p-hint'); h.dataset.k = '';
+    if (ctx.demo || !bridgeOn()) return;
+    try {
+      const r = await ctx.bridge.pushConfig(cfgBody());
+      if (r && r.ready === false) { h.dataset.k = 'cfg'; hint('ยังไม่ได้รันฟังก์ชัน setupPush ในชีต — ตั้งเวลาไว้แล้ว แต่ยังไม่ส่งแจ้งเตือนจนกว่าจะรัน', true); }
+      else { hint(''); }
+    } catch (er) { toast(errMsg(er), true); }
+  };
+  const saveTimes = () => {
+    const b = cfgBody();
+    S.saveSettings({ push_before_enabled: b.before_enabled, push_before_time: b.before_time, push_day_enabled: b.day_enabled, push_day_time: b.day_time }).then(sendCfg, (er) => toast(errMsg(er), true));
+  };
+  ['p-before-on', 'p-before-t', 'p-day-on', 'p-day-t'].forEach((id) => { g(id).addEventListener('change', saveTimes); });
+
+  g('p-on').onclick = () => {
+    if (ctx.demo) return toast('ต้องใช้แอปจริง (ไม่ใช่โหมดตัวอย่าง) ถึงจะเปิดแจ้งเตือนได้', true);
+    if (noBridge()) return;
+    const key = g('p-key').value.trim(), btn = g('p-on');
+    // NOTE: enablePush() calls Notification.requestPermission() synchronously — keep it first in this handler
+    const run = pm ? pm.enablePush({ vapidKey: key }) : import('./push.js').then((m) => { pm = m; return m.enablePush({ vapidKey: key }); });
+    btn.disabled = true; btn.textContent = 'กำลังเปิด…';
+    (async () => {
+      try {
+        const token = await run;
+        await S.saveSettings({ push_vapid_key: key });
+        await ctx.bridge.pushRegister(token, pm.deviceLabel());
+        toast('เปิดแจ้งเตือนบนเครื่องนี้แล้ว');
+        sendCfg();
+      } catch (er) { toast(errMsg(er), true); }
+      btn.disabled = false; btn.textContent = 'เปิดการแจ้งเตือนบนเครื่องนี้';
+      try { if (pm) sup = await pm.pushSupport(); } catch (e) { /* ignore */ }
+      if (el.isConnected) draw();
+    })();
+  };
+  g('p-off').onclick = async () => {
+    const btn = g('p-off'); btn.disabled = true;
+    try {
+      const m = pm || await import('./push.js'), tok = m.getSavedToken();
+      await m.disablePush();
+      if (tok && bridgeOn()) { try { await ctx.bridge.pushUnregister(tok); } catch (er) { toast(errMsg(er), true); } }
+      toast('ปิดแจ้งเตือนบนเครื่องนี้แล้ว');
+    } catch (er) { toast(errMsg(er), true); }
+    btn.disabled = false; if (el.isConnected) draw();
+  };
+  g('p-test').onclick = async () => {
+    if (ctx.demo) return toast('ต้องใช้แอปจริง (ไม่ใช่โหมดตัวอย่าง) ถึงจะทดสอบได้', true);
+    if (noBridge()) return;
+    const btn = g('p-test'); btn.disabled = true; btn.textContent = 'กำลังส่ง…';
+    try {
+      const r = await ctx.bridge.pushTest();
+      const n = (r && r.sent) || 0, f = (r && r.failed) || 0;
+      if (!n && !f) toast('ยังไม่มีเครื่องที่ลงทะเบียน — กด "เปิดการแจ้งเตือนบนเครื่องนี้" ก่อน', true);
+      else toast('ส่งแล้ว ' + n + ' เครื่อง' + (f ? ' · ไม่สำเร็จ ' + f + (r.errors && r.errors[0] ? ' (' + r.errors[0] + ')' : '') : ''), !!f && !n);
+    } catch (er) { toast(errMsg(er), true); }
+    btn.disabled = false; btn.textContent = 'ส่งแจ้งเตือนทดสอบ';
+  };
+  const bo = ctx.bridge && ctx.bridge.onStatus(() => { if (!el.isConnected) { if (bo) bo(); return; } draw(); });
 }

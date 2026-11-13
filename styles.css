@@ -366,3 +366,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--sage);box-shadow:0 0 
 .cropzoom input[type=range]::-moz-range-track{height:6px;border-radius:99px;background:#DAD8D2}
 .cropzoom input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;border-radius:50%;background:var(--sage);border:3px solid #fff;box-shadow:0 2px 8px rgba(38,48,43,.25);margin-top:-11px}
 .cropzoom input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--sage);border:3px solid #fff;box-shadow:0 2px 8px rgba(38,48,43,.25)}
+
+.pushrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
+.pushrow .switch{flex:1;min-width:0}
+input[type=time]{height:48px;padding:0 12px;border-radius:var(--r-in);border:1px solid var(--line-2);background:#fff;font-size:16px;outline:none;-webkit-appearance:none;appearance:none;width:auto;flex:none;min-width:118px;text-align:center;font-family:inherit;color:var(--ink)}
+input[type=time]:focus{border-color:var(--sage);box-shadow:0 0 0 4px rgba(94,155,123,.16)}
