@@ -1,7 +1,7 @@
 // Shared UI helpers: context, formatting, icons, toast, sheets, dialogs, file helpers.
 
 export const ctx = {
-  store: null, adapter: null, demo: false,
+  store: null, adapter: null, demo: false, bridge: null,
   ui: { of: 'all', oq: '', limO: 60, pq: '', sold: false, limP: 60, cq: '', cch: 'all', limC: 60, menu: null },
   nav: { tab: () => {}, menu: () => {}, orders: () => {}, rerender: () => {} },
 };
@@ -199,3 +199,30 @@ export function emptyHTML(em, title, text, btn, act) {
   return '<div class="empty fade-in"><div class="em">' + em + '</div><div class="t">' + esc(title) + '</div>' + (text ? '<p>' + esc(text) + '</p>' : '<p></p>') + (btn ? '<button class="btn" data-act="' + act + '">' + esc(btn) + '</button>' : '') + '</div>';
 }
 export function moreBtn(act, label) { return '<div class="more"><button class="btn sec sm" data-act="' + act + '">' + esc(label || 'แสดงเพิ่ม') + '</button></div>'; }
+
+// ---------- plant sort (shared by pickers + plants tab) ----------
+export const PICK_SORTS = [['hot', 'ขายบ่อย'], ['new', 'ใหม่ล่าสุด'], ['name', 'ชื่อ ก-ฮ / A-Z'], ['asc', 'ราคาต่ำ → สูง'], ['desc', 'ราคาสูง → ต่ำ'], ['code', 'รหัส']];
+export function getPickSort() {
+  let v = ''; try { v = localStorage.getItem('plantapp_pick_sort') || ''; } catch (e) { /* ignore */ }
+  return PICK_SORTS.some((x) => x[0] === v) ? v : 'hot';
+}
+export function setPickSort(v) { try { localStorage.setItem('plantapp_pick_sort', v); } catch (e) { /* ignore */ } }
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+export function sortPlants(list, mode) {
+  mode = mode || getPickSort();
+  const newer = (a, b) => cmp(str(b.created_at), str(a.created_at)) || cmp(str(b.code), str(a.code));
+  const f = {
+    hot: (a, b) => (num(b.sold_count) - num(a.sold_count)) || newer(a, b),
+    new: newer,
+    name: (a, b) => str(a.name).localeCompare(str(b.name), 'th') || cmp(str(a.code), str(b.code)),
+    asc: (a, b) => (num(a.price) - num(b.price)) || newer(a, b),
+    desc: (a, b) => (num(b.price) - num(a.price)) || newer(a, b),
+    code: (a, b) => cmp(str(a.code), str(b.code)),
+  }[mode] || newer;
+  return list.slice().sort(f);
+}
+export function sortBarHTML(extra) {
+  const cur = getPickSort();
+  return '<label class="sortbar"' + (extra || '') + '><span>เรียง</span><select data-sort aria-label="เรียงต้นไม้">' + PICK_SORTS.map((x) => '<option value="' + x[0] + '"' + (x[0] === cur ? ' selected' : '') + '>' + esc(x[1]) + '</option>').join('') + '</select></label>';
+}
+export const soldHint = (p) => (num(p.sold_count) > 0 ? ' · ขายแล้ว ' + num(p.sold_count) : '');

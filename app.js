@@ -178,7 +178,9 @@ async function boot() {
   adapter.onAuth(async (user) => {
     if (!user) { if (started) { location.reload(); return; } showLogin(adapter); return; }
     if (started) return; started = true;
-    try { await store.start(); showApp(store); } catch (e) { showFatal(e); }
+    try { await store.start(); showApp(store); } catch (e) { showFatal(e); return; }
+    // Google Sheet / Calendar bridge: background only, never blocks the UI (stays idle when not configured, e.g. demo mode)
+    try { const bm = await import('./bridge.js'); ctx.bridge = bm.createBridge(store); ctx.bridge.start(); } catch (e) { console.error('bridge', e); }
   });
 }
 boot().catch((e) => { console.error(e); try { showFatal(e); } catch (x) { /* ignore */ } });
