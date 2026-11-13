@@ -22,7 +22,12 @@ export const DEFAULT_SETTINGS = {
   bridge_token: '',
   reminder_hour: 9,
   calendar_enabled: true,
-  legacy_imported: false
+  legacy_imported: false,
+  push_vapid_key: '',
+  push_before_enabled: true,
+  push_before_time: '18:00',
+  push_day_enabled: true,
+  push_day_time: '08:00'
 };
 const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
 const PAGE = 50;

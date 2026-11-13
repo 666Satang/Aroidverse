@@ -16,8 +16,40 @@ function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'navigate') { try { handleNavigate(e.data.url); } catch (x) { /* ignore */ } return; }
     if (e.data && e.data.type === 'updated') toast('มีเวอร์ชันใหม่ แตะเพื่ออัปเดต', false, { sticky: true, cls: 'upd', onclick: () => location.reload() });
   });
+}
+
+// deep link from a push notification: ?tab=orders&filter=ship -> orders tab filtered to "รอส่ง"
+let appReady = false, pendingNav = null;
+function applyDeepLink(p) {
+  const t = p.get('tab'), f = p.get('filter');
+  if (t === 'orders') ctx.nav.orders(f === 'ship' ? 'pending' : 'all');
+  else if (t && ['home', 'plants', 'menu'].indexOf(t) >= 0) ctx.nav.tab(t);
+}
+function handleNavigate(url) {
+  let p;
+  try { p = new URL(url, location.href).searchParams; } catch (e) { return; }
+  if (!p.get('tab')) return;
+  if (!appReady) { pendingNav = p; return; }
+  applyDeepLink(p);
+}
+function consumeStartLink() {
+  const hadLink = params.has('tab');
+  if (hadLink) { pendingNav = new URLSearchParams(location.search); try { const u = new URL(location.href); ['tab', 'filter'].forEach((k) => u.searchParams.delete(k)); history.replaceState(null, '', u.pathname + u.search + u.hash); } catch (e) { /* ignore */ } }
+}
+function appIsReady() { appReady = true; if (pendingNav) { const p = pendingNav; pendingNav = null; try { applyDeepLink(p); } catch (e) { console.error(e); } } }
+
+// once a day: silently refresh this device's FCM token, re-register with the bridge when it changed
+async function refreshPush(store) {
+  try {
+    const st = store.state.settings || {};
+    if (!lsGet('plantapp_push_token') || !st.push_vapid_key || ctx.demo) return;
+    const pm = await import('./push.js');
+    const r = await pm.refreshTokenIfDue(st.push_vapid_key);
+    if (r && r.changed && ctx.bridge) await ctx.bridge.pushRegister(r.token, pm.deviceLabel());
+  } catch (e) { /* silent */ }
 }
 
 // ---------------------------------------------------------------- screens
@@ -148,7 +180,7 @@ function showApp(store) {
   });
   store.subscribe(schedule);
   if (store.onError) store.onError((e) => toast(errMsg(e), true));
-  mountView(); hideSplash(); warm();
+  mountView(); hideSplash(); warm(); appIsReady();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { try { if (store.checkRollover) store.checkRollover(); } catch (e) { /* ignore */ } schedule(); } });
 }
 
@@ -161,6 +193,7 @@ async function getConfig() {
 
 async function boot() {
   registerSW();
+  consumeStartLink();
   ctx.demo = params.get('demo') === '1';
   let adapter;
   if (ctx.demo) {
@@ -181,6 +214,7 @@ async function boot() {
     try { await store.start(); showApp(store); } catch (e) { showFatal(e); return; }
     // Google Sheet / Calendar bridge: background only, never blocks the UI (stays idle when not configured, e.g. demo mode)
     try { const bm = await import('./bridge.js'); ctx.bridge = bm.createBridge(store); ctx.bridge.start(); } catch (e) { console.error('bridge', e); }
+    refreshPush(store);
   });
 }
 boot().catch((e) => { console.error(e); try { showFatal(e); } catch (x) { /* ignore */ } });

@@ -1,11 +1,11 @@
 // sw.js — offline shell + stale-while-revalidate
-const VERSION = 'v3.1.0';
+const VERSION = 'v3.2.0';
 const APP_CACHE = 'plantapp-app-' + VERSION;
 const LIB_CACHE = 'plantapp-lib-' + VERSION;
 const PRECACHE = [
   './', 'index.html', 'styles.css', 'app.js', 'store.js', 'adapter-mock.js', 'adapter-fire.js',
   'invoice.js', 'gemini.js', 'config.js', 'manifest.webmanifest',
-  'bridge.js', 'ui-crop.js', 'ui-core.js', 'ui-home.js', 'ui-orders.js', 'ui-form.js', 'ui-lists.js', 'ui-menu.js',
+  'bridge.js', 'push.js', 'ui-crop.js', 'ui-core.js', 'ui-home.js', 'ui-orders.js', 'ui-form.js', 'ui-lists.js', 'ui-menu.js',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon.png'
 ];
 
@@ -86,4 +86,45 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'skipWaiting') self.skipWaiting();
+});
+
+// ---------------------------------------------------------------- web push (data-only FCM messages, no Firebase code here)
+function parsePush(event) {
+  let d = null;
+  try { d = event.data ? event.data.json() : null; } catch (e) {
+    try { d = { body: event.data.text() }; } catch (x) { d = null; }
+  }
+  if (!d || typeof d !== 'object') d = {};
+  const data = d.data && typeof d.data === 'object' ? d.data : {};
+  const n = d.notification && typeof d.notification === 'object' ? d.notification : {};
+  const pick = (k) => String(data[k] || n[k] || d[k] || '');
+  return { title: pick('title') || 'Plant Orders', body: pick('body'), tag: pick('tag'), url: pick('url') || './?tab=orders&filter=ship' };
+}
+
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let p;
+    try { p = parsePush(event); } catch (e) { p = { title: 'Plant Orders', body: '', tag: '', url: './' }; }
+    const opts = { body: p.body, icon: 'icon-192.png', badge: 'icon-192.png', data: { url: p.url } };
+    if (p.tag) opts.tag = p.tag;
+    await self.registration.showNotification(p.title, opts);
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const raw = (event.notification.data && event.notification.data.url) || './';
+  let url;
+  try { url = new URL(raw, self.registration.scope).href; } catch (e) { url = self.registration.scope; }
+  event.waitUntil((async () => {
+    const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const mine = list.filter((c) => c.url && c.url.indexOf(self.registration.scope) === 0);
+    const c = mine[0];
+    if (c) {
+      try { await c.focus(); } catch (e) { /* ignore */ }
+      try { c.postMessage({ type: 'navigate', url }); } catch (e) { /* ignore */ }
+      return;
+    }
+    await self.clients.openWindow(url);
+  })());
 });

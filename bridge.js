@@ -320,8 +320,21 @@ export function createBridge(store, opts) {
     return r.data || {};
   }
 
+  // ----- push notifications (SPEC5): explicit calls, reject with a Thai Error ---------------------------------
+  async function call(action, body) {
+    if (!configured()) throw new Error('ยังไม่ได้ตั้งค่า Google Sheet (ใส่ URL เว็บแอปและโทเคนก่อน)');
+    return post(String(action), body || {});
+  }
+  const pushRegister = (fcmToken, label) => call('push_register', { fcm_token: String(fcmToken || ''), label: String(label || '') });
+  const pushUnregister = (fcmToken) => call('push_unregister', { fcm_token: String(fcmToken || '') });
+  const pushConfig = (c) => {
+    c = c || {};
+    return call('push_config', { before_enabled: !!c.before_enabled, before_time: String(c.before_time || ''), day_enabled: !!c.day_enabled, day_time: String(c.day_time || '') });
+  };
+  const pushTest = () => call('push_test', {});
+
   loadQueue();
-  return { start, stop, status, onStatus, syncNow, pushAll, test, fetchLegacy };
+  return { start, stop, status, onStatus, syncNow, pushAll, test, fetchLegacy, call, pushRegister, pushUnregister, pushConfig, pushTest };
 }
 
 export default createBridge;
