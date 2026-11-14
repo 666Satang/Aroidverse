@@ -9,7 +9,7 @@ const trim = (v) => str(v).trim();
 
 export const LABEL_DEFAULTS = {
   label_width_mm: 50, label_height_mm: 50, label_dpi: 300, label_rotate: false,
-  label_show_sender: true, label_sender_phone: '', label_sender_address: '', label_show_order_no: true,
+  label_show_sender: false, label_sender_phone: '', label_sender_address: '', label_show_order_no: true,
 };
 
 // ---------------------------------------------------------------- data
@@ -19,7 +19,7 @@ export function labelData({ order, customer, settings, overrides } = {}) {
   order = order || {}; customer = customer || {}; settings = settings || {}; overrides = overrides || {};
   const pick = (k, fb) => (overrides[k] !== undefined && overrides[k] !== null ? trim(overrides[k]) : trim(fb));
   const name = pick('name', customer.name) || trim(order.customer_name);
-  const showSender = settings.label_show_sender !== false;
+  const showSender = settings.label_show_sender === undefined ? LABEL_DEFAULTS.label_show_sender : (settings.label_show_sender !== false && settings.label_show_sender !== 'false');
   return {
     name,
     phone: pick('phone', customer.phone),

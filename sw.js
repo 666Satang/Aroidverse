@@ -1,10 +1,10 @@
 // sw.js — offline shell + stale-while-revalidate
-const VERSION = 'v3.3.0';
+const VERSION = 'v3.4.0';
 const APP_CACHE = 'plantapp-app-' + VERSION;
 const LIB_CACHE = 'plantapp-lib-' + VERSION;
 const PRECACHE = [
   './', 'index.html', 'styles.css', 'app.js', 'store.js', 'adapter-mock.js', 'adapter-fire.js',
-  'invoice.js', 'label.js', 'gemini.js', 'config.js', 'manifest.webmanifest',
+  'invoice.js', 'label.js', 'printer.js', 'gemini.js', 'config.js', 'manifest.webmanifest',
   'bridge.js', 'push.js', 'ui-crop.js', 'ui-core.js', 'ui-home.js', 'ui-orders.js', 'ui-form.js', 'ui-lists.js', 'ui-menu.js',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon.png'
 ];
@@ -79,7 +79,7 @@ self.addEventListener('fetch', (event) => {
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
     event.respondWith(sameOrigin(req));
-  } else if (url.href.startsWith('https://www.gstatic.com/firebasejs/')) {
+  } else if (url.href.startsWith('https://www.gstatic.com/firebasejs/') || url.href.startsWith('https://cdn.jsdelivr.net/npm/@mmote/') || url.href.startsWith('https://esm.sh/')) {
     event.respondWith(cacheFirst(req));
   }
 });

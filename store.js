@@ -32,10 +32,15 @@ export const DEFAULT_SETTINGS = {
   label_height_mm: 50,
   label_dpi: 300,
   label_rotate: false,
-  label_show_sender: true,
+  label_show_sender: false,
   label_sender_phone: '',
   label_sender_address: '',
-  label_show_order_no: true
+  label_show_order_no: true,
+  printer_task: '',
+  printer_density: 3,
+  printer_direction: 'top',
+  printer_label_type: 1,
+  printer_auto_print: true
 };
 const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
 const PAGE = 50;

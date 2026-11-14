@@ -1,6 +1,7 @@
 // Menu tab, reports (CSV + print), settings, backup.
 import { ctx, $, esc, num, str, sum, money, fmtN, fmtDate, MON, MONTHS, icon, toast, openSheet, dialog, confirmDlg, bind, errMsg, busy, emptyHTML, shareOrDownload, downloadBlob, closeAllSheets } from './ui-core.js';
-import { orderCard, openOrder } from './ui-orders.js';
+import { orderCard, openOrder, copyPrinterLog, printError, printerStatusText } from './ui-orders.js';
+import * as PR from './printer.js';
 
 // ---------------------------------------------------------------- menu root
 export const menuView = {
@@ -104,7 +105,64 @@ function labelHTML(st) {
     '<label class="fld">ความละเอียดเครื่องพิมพ์ (DPI)</label><select id="lb-dpi"><option value="203"' + (num(st.label_dpi) === 203 ? ' selected' : '') + '>203 dpi</option><option value="300"' + (num(st.label_dpi) === 203 ? '' : ' selected') + '>300 dpi</option></select>' +
     '<div style="margin-top:6px">' + sw('lb-rot', st.label_rotate === true, 'หมุน 90° (ป้อนสติกเกอร์ตามความยาว)') + sw('lb-ord', st.label_show_order_no !== false, 'แสดงเลขบิล') + sw('lb-snd', st.label_show_sender !== false, 'แสดงผู้ส่ง') + '</div>' +
     '<div id="lb-sender"><label class="fld">เบอร์โทรผู้ส่ง</label><input id="lb-sph" type="tel" inputmode="tel" autocomplete="off" value="' + esc(st.label_sender_phone) + '"><label class="fld">ที่อยู่ผู้ส่ง</label><textarea id="lb-sad" style="min-height:76px">' + esc(st.label_sender_address) + '</textarea><p class="sub" style="margin-top:8px">ชื่อผู้ส่งใช้ชื่อร้านด้านบน</p></div>' +
-    '<div class="h3" style="margin-top:18px">ตัวอย่าง</div><div class="sm-prev" id="lb-prev"><div class="spin"></div></div></div>';
+    '<div class="h3" style="margin-top:18px">ตัวอย่าง</div><div class="sm-prev" id="lb-prev"><div class="spin"></div></div>' + printerHTML(st) + '</div>';
+}
+
+// ---- Bluetooth printer settings (SPEC7)
+const TASKS = ['D110M_V4', 'B21_V1', 'B1', 'D110', 'D11_V1'];
+const segBtns = (list, cur) => list.map((x) => '<button type="button" data-v="' + x[0] + '" class="' + (String(cur) === String(x[0]) ? 'on' : '') + '">' + x[1] + '</button>').join('');
+function printerHTML(st) {
+  const sup = PR.printerSupport();
+  const head = '<div class="hr" style="margin:20px 0 4px"></div><div class="h3" style="margin-top:14px">เครื่องพิมพ์ Bluetooth</div>';
+  if (!sup.bluetooth) return head + '<p class="sub">' + esc(sup.reason === 'ios' ? 'iPhone/iPad พิมพ์ตรงผ่าน Bluetooth ไม่ได้ — ใช้ปุ่มแชร์ไปแอป NIIMBOT' : PR.printerUnsupportedText(sup.reason)) + '</p>';
+  const task = String(st.printer_task || ''), known = !task || TASKS.indexOf(task) >= 0;
+  const dens = Math.min(5, Math.max(1, Math.round(num(st.printer_density)) || 3));
+  const lt = [1, 2, 3].indexOf(Math.round(num(st.printer_label_type))) >= 0 ? Math.round(num(st.printer_label_type)) : 1;
+  return head +
+    '<div class="pr-status"><i id="pr-dot"></i><span id="pr-txt">…</span></div>' +
+    '<div class="pr-btns"><button type="button" class="btn sec sm" id="pr-conn">เชื่อมต่อ</button><button type="button" class="btn ghost sm" id="pr-disc">ตัดการเชื่อมต่อ</button><button type="button" class="btn sec sm" id="pr-test">พิมพ์ทดสอบ</button></div>' +
+    '<label class="fld">ความเข้ม (1–5)</label><div class="seg" id="pr-dens">' + segBtns([1, 2, 3, 4, 5].map((n) => [n, n]), dens) + '</div>' +
+    '<label class="fld">ทิศทางการพิมพ์</label><div class="seg" id="pr-dir">' + segBtns([['top', 'บนลงล่าง'], ['left', 'ซ้ายไปขวา']], st.printer_direction === 'left' ? 'left' : 'top') + '</div>' +
+    '<label class="fld">โหมดงานพิมพ์</label><select id="pr-task"><option value=""' + (task ? '' : ' selected') + '>อัตโนมัติ</option>' + TASKS.map((t) => '<option value="' + t + '"' + (task === t ? ' selected' : '') + '>' + t + '</option>').join('') + '<option value="__other"' + (known ? '' : ' selected') + '>อื่น ๆ…</option></select>' +
+    '<input id="pr-task-o" placeholder="ชื่อโหมด เช่น D110M_V4" autocomplete="off" autocapitalize="off" spellcheck="false" style="margin-top:8px"' + (known ? ' hidden' : '') + ' value="' + (known ? '' : esc(task)) + '">' +
+    '<label class="fld">ชนิดฉลาก</label><select id="pr-lt"><option value="1"' + (lt === 1 ? ' selected' : '') + '>1 · มีช่องว่าง</option><option value="2"' + (lt === 2 ? ' selected' : '') + '>2 · ขีดดำ</option><option value="3"' + (lt === 3 ? ' selected' : '') + '>3 · ต่อเนื่อง</option></select>' +
+    '<div style="margin-top:8px"><label class="switch"><input type="checkbox" id="pr-auto"' + (st.printer_auto_print !== false ? ' checked' : '') + '> พิมพ์ทันทีจากหน้าออเดอร์</label></div>' +
+    '<button type="button" class="btn ghost sm block" id="pr-log" style="margin-top:12px">คัดลอก log เครื่องพิมพ์</button>';
+}
+function readPrinter(el) {
+  if (!$('#pr-dens', el)) return {}; // controls not shown (no Bluetooth) — leave stored values alone
+  const on = (id) => { const b = $('#' + id + ' button.on', el); return b ? b.dataset.v : ''; };
+  let task = $('#pr-task', el).value;
+  if (task === '__other') task = $('#pr-task-o', el).value.trim();
+  return {
+    printer_task: task, printer_density: Math.min(5, Math.max(1, num(on('pr-dens')) || 3)), printer_direction: on('pr-dir') === 'left' ? 'left' : 'top',
+    printer_label_type: [1, 2, 3].indexOf(num($('#pr-lt', el).value)) >= 0 ? num($('#pr-lt', el).value) : 1, printer_auto_print: $('#pr-auto', el).checked,
+  };
+}
+function initPrinter(el, sample) {
+  if (!$('#pr-dens', el)) return;
+  PR.preloadPrinterLib();
+  const g = (id) => $('#' + id, el);
+  const paint = (ps) => {
+    if (!el.isConnected) { unsub(); return; }
+    g('pr-txt').textContent = printerStatusText(ps) + (ps.lastError && !ps.connected ? ' · ' + ps.lastError : '');
+    g('pr-dot').className = ps.connected ? 'ok' : ps.connecting || ps.printing ? 'wait' : '';
+    const busyNow = ps.connecting || ps.printing;
+    g('pr-conn').disabled = busyNow || ps.connected; g('pr-disc').disabled = !ps.connected || ps.printing; g('pr-test').disabled = busyNow;
+  };
+  const unsub = PR.onPrinterState(paint); paint(PR.printerState());
+  ['pr-dens', 'pr-dir'].forEach((id) => { g(id).onclick = (e) => { const b = e.target.closest('button[data-v]'); if (b) g(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); }; });
+  g('pr-task').onchange = () => { const o = g('pr-task').value === '__other'; g('pr-task-o').hidden = !o; if (o) g('pr-task-o').focus(); };
+  g('pr-conn').onclick = () => { PR.connectPrinter().then(() => toast('เชื่อมต่อเครื่องพิมพ์แล้ว'), printError); };
+  g('pr-disc').onclick = () => { PR.disconnectPrinter().then(() => toast('ตัดการเชื่อมต่อแล้ว')); };
+  g('pr-test').onclick = async () => {
+    try {
+      const canvas = await sample();
+      await PR.printCanvas(canvas, { copies: 1, settings: Object.assign({}, ctx.store.state.settings, readLabel(el), readPrinter(el)) });
+      toast('ส่งพิมพ์ทดสอบแล้ว');
+    } catch (e) { printError(e); }
+  };
+  g('pr-log').onclick = copyPrinterLog;
 }
 function readLabel(el) {
   const n = (id, d, lo, hi) => { const v = num($('#' + id, el).value); return Math.min(hi, Math.max(lo, v || d)); };
@@ -118,14 +176,17 @@ function initLabel(el) {
   const g = (id) => $('#' + id, el);
   const seg = g('lb-seg');
   let lm = null, tok = 0;
+  const sampleLabel = async () => {
+    lm = lm || await import('./label.js');
+    const L = readLabel(el), shop = ($('[data-k="shop_name"]', el) || {}).value || '';
+    const set = Object.assign({}, ctx.store.state.settings, L, { shop_name: shop });
+    const data = lm.labelData({ order: { invoice_no: 'INV-202611-001' }, customer: { name: 'Hans Becker', phone: '+49 170 1234567', address: 'Musterstrasse 12\n10115 Berlin', country: 'Germany' }, settings: set });
+    return { c: await lm.renderLabel(data, set), set };
+  };
   const draw = async () => {
     const t = ++tok;
     try {
-      lm = lm || await import('./label.js');
-      const L = readLabel(el), shop = ($('[data-k="shop_name"]', el) || {}).value || '';
-      const set = Object.assign({}, ctx.store.state.settings, L, { shop_name: shop });
-      const data = lm.labelData({ order: { invoice_no: 'INV-202611-001' }, customer: { name: 'Hans Becker', phone: '+49 170 1234567', address: 'Musterstrasse 12\n10115 Berlin', country: 'Germany' }, settings: set });
-      const c = await lm.renderLabel(data, set);
+      const { c, set } = await sampleLabel();
       if (t !== tok || !el.isConnected) return;
       const px = lm.labelPixelSize(set); c.style.width = Math.round(px.w_mm * 5) + 'px';
       const box = g('lb-prev'); box.innerHTML = ''; box.appendChild(c);
@@ -145,6 +206,7 @@ function initLabel(el) {
   ['lb-dpi', 'lb-rot', 'lb-ord', 'lb-snd'].forEach((id) => g(id).addEventListener('change', () => { sync(); soon(); }));
   const shop = $('[data-k="shop_name"]', el); if (shop) shop.addEventListener('input', soon);
   draw();
+  initPrinter(el, async () => (await sampleLabel()).c);
 }
 
 // ---------------------------------------------------------------- reports
@@ -237,7 +299,7 @@ export const settingsView = {
     $('#s-gshow', el).onclick = (e) => { const i = $('#s-gkey', el), sh = i.type === 'password'; i.type = sh ? 'text' : 'password'; e.target.textContent = sh ? 'ซ่อน' : 'แสดง'; };
     $('#s-save', el).onclick = () => {
       const o = {}; el.querySelectorAll('[data-k]').forEach((x) => { o[x.dataset.k] = x.value.trim(); });
-      Object.assign(o, readBridge(el), readLabel(el));
+      Object.assign(o, readBridge(el), readLabel(el), readPrinter(el));
       ctx.store.saveSettings(o).then(() => { toast('บันทึกการตั้งค่าแล้ว'); ctx.nav.menu(null); }, (e) => toast(errMsg(e), true));
     };
     initBridge(el);

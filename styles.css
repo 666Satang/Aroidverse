@@ -385,6 +385,22 @@ input[type=time]:focus{border-color:var(--sage);box-shadow:0 0 0 4px rgba(94,155
 .seg.wrap{flex-wrap:wrap;border-radius:22px}
 .seg.wrap button{flex:1 0 30%;min-height:44px}
 .rwarn{color:#B4473F;font-size:13.5px;font-weight:600;line-height:1.5;margin-top:10px}
+/* Bluetooth printing (SPEC7) */
+.pr-line{flex:1 0 100%;text-align:center;font-size:13px;color:var(--muted);line-height:1.4;margin:-2px 0 0}
+.pr-line.ok{color:var(--sage-d);font-weight:600}
+.lbl-sec{flex:1 0 100%;display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:8px}
+.lbl-sec .btn{padding:0 6px;font-size:13.5px;gap:5px;min-width:0}
+.lbl-sec .btn .i{width:18px;height:18px;flex:none}
+.btn.is-busy{opacity:1;background:var(--sage-d)}
+.btn.sec.is-busy,.btn.ghost.is-busy{background:var(--mint-2);color:var(--sage-d)}
+.btn.qprint{margin-bottom:12px}
+.pr-status{display:flex;align-items:center;gap:10px;background:#F6F4EF;border-radius:14px;padding:12px 14px;font-size:14.5px;font-weight:600;line-height:1.4;margin-top:6px}
+.pr-status i{width:10px;height:10px;border-radius:50%;background:#BDB9AF;flex:none}
+.pr-status i.ok{background:var(--sage)}.pr-status i.wait{background:#E0A93B}
+.pr-btns{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px;margin-top:10px}
+.pr-btns .btn{padding:0 6px;font-size:13.5px;gap:5px;min-width:0}
+.pr-btns .btn .i{width:18px;height:18px;flex:none}
+.pr-log{width:100%;min-height:52vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow:auto;margin-top:10px}
 .sm-prev{display:grid;place-items:center;background:#E9E6DE;border-radius:14px;padding:12px;margin-top:12px}
 .sm-prev canvas{display:block;background:#fff;max-width:100%;height:auto;outline:1px solid #8C958F}
 .mm-row{display:flex;align-items:center;gap:10px;margin-top:10px}

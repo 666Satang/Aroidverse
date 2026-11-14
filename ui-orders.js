@@ -1,5 +1,6 @@
 // Orders tab, order detail sheet, payment / ship / edit dialogs, invoice preview.
 import { ctx, $, esc, num, str, money, fmtDate, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy, closeAllSheets } from './ui-core.js';
+import * as PR from './printer.js';
 
 export const FLT = {
   all: () => true,
@@ -76,6 +77,7 @@ const PT = { deposit: ['lilac', 'มัดจำ'], payment: ['mint', 'ชำร
 export function openOrder(id) {
   const S = ctx.store;
   if (!findOrder(id)) return;
+  warmPrinter();
   openSheet({
     title: 'ออเดอร์', live: true,
     build(s) {
@@ -108,12 +110,14 @@ export function openOrder(id) {
         '<div class="kv hl"><span>' + (over ? 'ต้องคืนเงิน' : 'ค้างชำระ') + '</span><span class="' + (over ? 'red' : bal > 0.005 ? '' : 'green') + '">' + money(Math.abs(bal) < 0.005 ? 0 : Math.abs(bal)) + '</span></div></div>' +
         '<div class="card"><div class="h3">การจัดส่ง</div>' + ship + '</div>' +
         (o.note ? '<div class="card"><div class="h3">หมายเหตุ</div><div class="note-box">' + esc(o.note) + '</div></div>' : '') +
+        (act && quickPrintOn() ? '<button class="btn block qprint" id="qprint" data-act="qprint">' + icon('print') + '<span>พิมพ์ใบปะหน้า</span></button>' : '') +
         (act ? '<div class="menu-list">' +
           '<button class="mrow" data-act="edit"><span class="ic sky">' + icon('edit') + '</span><span class="t">แก้ไขข้อมูลออเดอร์</span>' + icon('chev', 'chev') + '</button>' +
           '<button class="mrow" data-act="label"><span class="ic mint">' + icon('box') + '</span><span class="t">ใบปะหน้า</span>' + icon('chev', 'chev') + '</button>' +
           '<button class="mrow" data-act="items"><span class="ic peach">' + icon('leaf') + '</span><span class="t">แก้ไขรายการสินค้า</span>' + icon('chev', 'chev') + '</button>' +
           (o.ship_status === 'shipped' ? '<button class="mrow" data-act="unship"><span class="ic lilac">' + icon('undo') + '</span><span class="t">ยกเลิกสถานะส่งแล้ว</span>' + icon('chev', 'chev') + '</button>' : '') +
           '<button class="mrow danger" data-act="cancel"><span class="ic rose">' + icon('close') + '</span><span class="t">ยกเลิกออเดอร์</span></button></div>' : '');
+      paintQuick();
       s.foot.innerHTML = '<button class="btn ghost" data-act="inv">' + icon('receipt') + ' บิล</button>' +
         (act && (bal > 0.005 || over) ? '<button class="btn" data-act="pay">' + icon('cash') + (over ? ' คืนเงิน' : ' รับเงิน') + '</button>' : '') +
         (act && o.ship_status === 'pending' ? '<button class="btn sec" data-act="ship">' + icon('truck') + ' ส่งแล้ว</button>' : '');
@@ -124,6 +128,7 @@ export function openOrder(id) {
           items: () => import('./ui-form.js').then((m) => m.openItemsEditor(id)),
           inv: () => openInvoice(id),
           label: () => openLabel(id),
+          qprint: () => quickPrint(id),
           delpay: (d) => {
             const o2 = findOrder(id), p = (o2.payments || []).find((x) => x.id === d.id); if (!p) return;
             const t = PT[p.type] || PT.payment;
@@ -209,23 +214,108 @@ export function openInvoice(id) {
 }
 
 
+// ---------------------------------------------------------------- direct Bluetooth printing helpers (SPEC7)
+let lmP = null;
+const labelMod = () => lmP || (lmP = import('./label.js'));
+const btOn = () => { try { return PR.printerSupport().bluetooth; } catch (e) { return false; } };
+const quickPrintOn = () => btOn() && ctx.store.state.settings.printer_auto_print !== false;
+export function warmPrinter() { if (!btOn()) return; labelMod().catch(() => {}); PR.preloadPrinterLib(); }
+
+export function printerStatusText(ps) {
+  if (ps.printing) return 'กำลังพิมพ์…' + (typeof ps.progress === 'number' ? ' ' + ps.progress + '%' : '');
+  if (ps.connecting) return 'กำลังเชื่อมต่อ…';
+  if (ps.connected) return 'เชื่อมต่อแล้ว: ' + (ps.name || 'NIIMBOT') + (ps.info && typeof ps.info.battery === 'number' ? ' · แบต ' + ps.info.battery + '%' : '');
+  return 'ยังไม่ได้เชื่อมต่อ — กดพิมพ์เพื่อเลือกเครื่อง';
+}
+
+// copy text (Clipboard API, then a hidden textarea fallback)
+export async function copyText(t) {
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(t); return true; } } catch (e) { /* fall through */ }
+  try {
+    const ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, t.length);
+    const ok = document.execCommand && document.execCommand('copy'); ta.remove(); return !!ok;
+  } catch (e) { return false; }
+}
+export async function copyPrinterLog() {
+  const ok = await copyText(PR.printerLog());
+  toast(ok ? 'คัดลอก log เครื่องพิมพ์แล้ว' : 'คัดลอกไม่ได้ — เปิดดู log แล้วเลือกข้อความเอง', !ok);
+  if (!ok) openPrinterLog();
+}
+export function openPrinterLog() {
+  openSheet({
+    title: 'log เครื่องพิมพ์', live: false,
+    build(sh) {
+      sh.body.innerHTML = '<p class="sub">ถ้าพิมพ์ไม่ได้ กด “คัดลอก” แล้วส่งข้อความนี้กลับมา</p><textarea class="pr-log" id="pr-log" readonly spellcheck="false"></textarea>';
+      $('#pr-log', sh.body).value = PR.printerLog();
+      sh.foot.innerHTML = '<button class="btn" data-act="cp">คัดลอก log</button>';
+      bind(sh.foot, { cp: async () => { const ok = await copyText(PR.printerLog()); toast(ok ? 'คัดลอก log เครื่องพิมพ์แล้ว' : 'คัดลอกไม่ได้', !ok); } });
+    },
+  });
+}
+let errT = 0;
+export function printError(e) {
+  const m = errMsg(e);
+  if (e && e.code === 'cancelled') { toast(m, true); return; }
+  toast(m + ' · แตะเพื่อดูรายละเอียด', true, { sticky: true, onclick: () => { const t = $('#toast'); if (t) t.hidden = true; openPrinterLog(); } });
+  clearTimeout(errT); errT = setTimeout(() => { const t = $('#toast'); if (t && t.textContent.indexOf('แตะเพื่อดูรายละเอียด') >= 0) t.hidden = true; }, 9000);
+}
+
+// one-tap button in the order detail (all copies in the DOM are kept in sync)
+let quickPhase = ''; // '' | 'render'
+function paintQuick() {
+  const ps = PR.printerState();
+  document.querySelectorAll('.qprint').forEach((b) => {
+    const t = quickPhase === 'render' ? 'กำลังสร้างภาพ…' : ps.printing || ps.connecting ? printerStatusText(ps) : 'พิมพ์ใบปะหน้า';
+    const busyNow = !!quickPhase || ps.printing || ps.connecting;
+    const sp = b.querySelector('span'); if (sp && sp.textContent !== t) sp.textContent = t;
+    b.disabled = busyNow; b.classList.toggle('is-busy', busyNow);
+  });
+}
+PR.onPrinterState(paintQuick);
+
+async function quickPrint(id) {
+  const S = ctx.store, o = findOrder(id); if (!o) return;
+  const ps = PR.printerState(); if (quickPhase || ps.printing || ps.connecting) return;
+  const cu = S.getCustomer(o.customer_id);
+  quickPhase = 'render'; paintQuick();
+  try {
+    const lm = await labelMod(), set = S.state.settings;
+    const data = lm.labelData({ order: findOrder(id) || o, customer: cu, settings: set });
+    if (!data.address.trim()) { quickPhase = ''; paintQuick(); openLabel(id); return; }
+    const canvas = await lm.renderLabel(data, set);
+    quickPhase = ''; paintQuick();
+    await PR.printCanvas(canvas, { copies: 1, settings: set });
+    toast('ส่งพิมพ์ใบปะหน้าแล้ว');
+  } catch (e) { printError(e); }
+  finally { quickPhase = ''; paintQuick(); }
+}
+
 // ---------------------------------------------------------------- shipping label (SPEC6 §2)
 export function openLabel(id) {
   const S = ctx.store, o = findOrder(id); if (!o) return;
   const cu = S.getCustomer(o.customer_id);
   const base = { name: '', phone: '', address: '', country: '' };
-  const d0 = import('./label.js');
+  const d0 = labelMod();
+  const bt = btOn();
+  if (bt) PR.preloadPrinterLib();
   const v = Object.assign({}, base), st = { copies: 1, save: false, saved: '', canvas: null, tok: 0, lm: null };
   const setting = () => S.state.settings;
+  let unsub = null;
   const sheet = openSheet({
     title: 'ใบปะหน้า', live: false, sticky: true,
+    onClose() { if (unsub) unsub(); },
     build(sh) {
       sh.body.innerHTML = '<div class="lbl-stage" id="l-stage"><div class="spin"></div></div><div class="lbl-meta" id="l-meta"></div><div class="lbl-warn" id="l-warn" hidden>' + icon('alert') + '<span id="l-warn-t"></span></div>' +
         '<div class="card" style="margin-top:14px"><label class="fld">ชื่อผู้รับ</label><input id="l-name" autocomplete="off"><label class="fld">เบอร์โทร</label><input id="l-phone" type="tel" inputmode="tel" autocomplete="off"><label class="fld">ที่อยู่</label><textarea id="l-addr" style="min-height:96px"></textarea><label class="fld">ประเทศ (ไม่ต้องใส่ถ้าส่งในไทย)</label><input id="l-country" autocomplete="off">' +
         (cu ? '<label class="switch" style="margin-top:10px"><input type="checkbox" id="l-save"> บันทึกข้อมูลนี้ลงลูกค้า</label>' : '') + '</div>' +
         '<div class="lbl-copies"><span>จำนวนใบ</span><div class="stepper"><button type="button" data-act="cm" aria-label="ลดจำนวนใบ">−</button><b id="l-n">1</b><button type="button" data-act="cp" aria-label="เพิ่มจำนวนใบ">+</button></div></div>';
       sh.foot.style.flexWrap = 'wrap';
-      sh.foot.innerHTML = '<button class="btn" data-act="share" style="flex:1 0 100%">' + icon('share') + ' แชร์ / ส่งไปแอปเครื่องพิมพ์</button><button class="btn ghost" data-act="save">' + icon('download') + ' บันทึกรูป</button><button class="btn sec" data-act="print">' + icon('print') + ' พิมพ์</button>';
+      sh.foot.innerHTML = bt
+        ? '<button class="btn" data-act="btprint" id="l-bt" style="flex:1 0 100%">' + icon('print') + '<span>พิมพ์ (Bluetooth)</span></button><div class="pr-line" id="l-pr"></div>' +
+          '<div class="lbl-sec"><button class="btn ghost sm" data-act="share">' + icon('share') + ' แชร์</button><button class="btn ghost sm" data-act="save">' + icon('download') + ' บันทึกรูป</button><button class="btn ghost sm" data-act="print">' + icon('print') + ' พิมพ์ผ่านระบบ</button></div>'
+        : '<button class="btn" data-act="share" style="flex:1 0 100%">' + icon('share') + ' แชร์ / ส่งไปแอปเครื่องพิมพ์</button><button class="btn ghost" data-act="save">' + icon('download') + ' บันทึกรูป</button><button class="btn sec" data-act="print">' + icon('print') + ' พิมพ์</button>' +
+          (PR.printerSupport().reason === 'ios' ? '<div class="pr-line" style="flex:1 0 100%">iPhone/iPad พิมพ์ตรงผ่าน Bluetooth ไม่ได้ — ใช้ปุ่มแชร์ไปแอป NIIMBOT</div>' : '');
     },
   });
   const g = (i) => $('#' + i, sheet.el);
@@ -300,5 +390,30 @@ export function openLabel(id) {
       window.print();
     },
   });
+  if (bt) {
+    const paint = () => {
+      const ps = PR.printerState(), b = g('l-bt'), l = g('l-pr'); if (!b || !l) return;
+      const busyNow = ps.printing || ps.connecting || st.sending;
+      b.disabled = !!busyNow; b.classList.toggle('is-busy', !!busyNow);
+      const sp = b.querySelector('span');
+      sp.textContent = ps.printing ? 'กำลังพิมพ์…' + (typeof ps.progress === 'number' ? ' ' + ps.progress + '%' : '') : ps.connecting ? 'กำลังเชื่อมต่อ…' : st.sending ? 'กำลังสร้างภาพ…' : 'พิมพ์ (Bluetooth)';
+      l.textContent = printerStatusText(ps);
+      l.classList.toggle('ok', !!ps.connected);
+    };
+    unsub = PR.onPrinterState(paint); paint();
+    bind(sheet.foot, {
+      btprint: async () => {
+        if (st.sending) return;
+        st.sending = true; paint();
+        try {
+          const c = await ready(); if (!c) return;
+          st.sending = false;
+          await PR.printCanvas(c, { copies: st.copies, settings: setting() });
+          toast('ส่งพิมพ์แล้ว ' + st.copies + ' ใบ');
+        } catch (e) { printError(e); }
+        finally { st.sending = false; paint(); }
+      },
+    });
+  }
   sync();
 }
