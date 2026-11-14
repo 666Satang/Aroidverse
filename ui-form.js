@@ -63,7 +63,7 @@ const payloadItems = (f) => f.items.map((i) => ({ plant_id: i.plant_id, name: st
 export function openOrderForm(opt) {
   opt = opt || {};
   const quick = !!opt.quick, S = ctx.store, st = S.state;
-  const f = { chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
+  const f = { chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', phone: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
   const cu0 = f.cid && S.getCustomer(f.cid); if (cu0 && CH[cu0.channel]) f.channel = cu0.channel;
   const seg = (id) => '<div class="seg" id="' + id + '"></div>';
 
@@ -132,7 +132,7 @@ export function openOrderForm(opt) {
         const drawCust = () => {
           const c = g('f-cust');
           if (f.mode === 'new') {
-            c.innerHTML = [['name', 'ชื่อลูกค้า *', ''], ['contact', 'ช่องทางติดต่อ (ชื่อ FB / IG / เบอร์)', ''], ['country', 'ประเทศ', '']].map((x) => '<label class="fld">' + x[1] + '</label><input data-nc="' + x[0] + '" value="' + esc(f.nc[x[0]]) + '">').join('') + '<label class="fld">ที่อยู่จัดส่ง</label><textarea data-nc="address" style="min-height:76px">' + esc(f.nc.address) + '</textarea>';
+            c.innerHTML = [['name', 'ชื่อลูกค้า *', ''], ['contact', 'ช่องทางติดต่อ (ชื่อ FB / IG)', ''], ['phone', 'เบอร์โทร', ''], ['country', 'ประเทศ', '']].map((x) => '<label class="fld">' + x[1] + '</label><input data-nc="' + x[0] + '"' + (x[0] === 'phone' ? ' type="tel" inputmode="tel"' : '') + ' value="' + esc(f.nc[x[0]]) + '">').join('') + '<label class="fld">ที่อยู่จัดส่ง</label><textarea data-nc="address" style="min-height:76px">' + esc(f.nc.address) + '</textarea>';
           } else if (f.cid) {
             const cu = S.getCustomer(f.cid);
             c.innerHTML = '<div class="row"><span class="ava ' + esc(cu ? cu.channel : 'other') + '">' + chIcon(cu && cu.channel) + '</span><div class="grow"><div class="nm" style="font-weight:700">' + esc(cu ? cu.name : f.cid) + '</div><div class="sub">' + esc(cu ? [CH[cu.channel], cu.country].filter(Boolean).join(' · ') : '') + '</div></div><button class="btn sec sm" data-act="chg">เปลี่ยน</button></div>';
@@ -143,7 +143,7 @@ export function openOrderForm(opt) {
         };
         const fillCres = () => {
           const q = f.cq.trim().toLowerCase(), r = g('f-cres'); if (!r) return;
-          const l = st.customers.filter((c) => !q || (str(c.name) + ' ' + str(c.contact) + ' ' + str(c.country)).toLowerCase().includes(q)).slice(0, 8);
+          const l = st.customers.filter((c) => !q || (str(c.name) + ' ' + str(c.contact) + ' ' + str(c.phone) + ' ' + str(c.country)).toLowerCase().includes(q)).slice(0, 8);
           r.innerHTML = l.length ? l.map((c) => '<button class="pick" data-act="pickc" data-id="' + esc(c.id) + '"><span class="ava ' + esc(c.channel) + '" style="width:38px;height:38px;border-radius:13px">' + chIcon(c.channel) + '</span><span class="grow"><span class="nm trunc" style="display:block">' + esc(c.name) + '</span><span class="sub">' + esc([CH[c.channel], c.country].filter(Boolean).join(' · ')) + '</span></span></button>').join('') : '<div class="sub" style="padding:14px;text-align:center">ไม่พบลูกค้า — กด "ลูกค้าใหม่" ด้านบน</div>';
         };
         drawSugg = () => {
@@ -194,7 +194,7 @@ export function openOrderForm(opt) {
           if (blank) wcust();
           else if (f.mode === 'new') {
             if (!f.nc.name.trim()) return toast('กรุณากรอกชื่อลูกค้า', true);
-            newC = { name: f.nc.name.trim(), channel: f.channel, contact: f.nc.contact.trim(), country: f.nc.country.trim(), address: f.nc.address.trim(), note: '' };
+            newC = { name: f.nc.name.trim(), channel: f.channel, contact: f.nc.contact.trim(), phone: f.nc.phone.trim(), country: f.nc.country.trim(), address: f.nc.address.trim(), note: '' };
           } else if (!f.cid) return toast('กรุณาเลือกลูกค้า หรือกด "ลูกค้าใหม่"', true);
           else cid = f.cid;
         }

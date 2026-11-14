@@ -258,16 +258,16 @@ function seed(adapter, putRaw) {
   });
 
   const C = [
-    ['C0001', 'Hans Becker', 'facebook', 'facebook.com/hans.becker', 'Germany', 'Hauptstr. 12\n10115 Berlin\nGermany'],
-    ['C0002', 'Emma Wilson', 'instagram', '@emma.plants', 'United Kingdom', '14 Rose Lane\nBristol BS1 4DJ\nUnited Kingdom'],
+    ['C0001', 'Hans Becker', 'facebook', 'facebook.com/hans.becker', 'Germany', 'Hauptstr. 12\n10115 Berlin\nGermany', '+49 170 1234567'],
+    ['C0002', 'Emma Wilson', 'instagram', '@emma.plants', 'United Kingdom', '14 Rose Lane\nBristol BS1 4DJ\nUnited Kingdom', '+44 7700 900123'],
     ['C0003', 'คุณมะลิ', 'walkin', '081-234-5678', 'Thailand', ''],
-    ['C0004', 'Yuki Tanaka', 'other', 'LINE: yuki_t', 'Japan', '2-3-4 Shibuya\nTokyo 150-0002\nJapan']
+    ['C0004', 'Yuki Tanaka', 'other', 'LINE: yuki_t', 'Japan', '2-3-4 Shibuya\nTokyo 150-0002\nJapan', '+81 90 1234 5678']
   ];
   const custId = {};
   C.forEach((r, i) => {
     const id = adapter.newId();
     custId[r[0]] = id;
-    putRaw('customers', id, { code: r[0], name: r[1], channel: r[2], contact: r[3], country: r[4], address: r[5], note: '', deleted: false, created_at: iso(addDays(today, -60 + i)), updated_at: iso(addDays(today, -60 + i)) });
+    putRaw('customers', id, { code: r[0], name: r[1], channel: r[2], contact: r[3], phone: r[6] || '', country: r[4], address: r[5], note: '', deleted: false, created_at: iso(addDays(today, -60 + i)), updated_at: iso(addDays(today, -60 + i)) });
   });
 
   const item = (code, name, price, qty) => ({ plant_id: code ? plantId[code] : '', code: code || '', name, unit_price: price, qty });
