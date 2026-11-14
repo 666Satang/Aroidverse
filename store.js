@@ -27,7 +27,15 @@ export const DEFAULT_SETTINGS = {
   push_before_enabled: true,
   push_before_time: '18:00',
   push_day_enabled: true,
-  push_day_time: '08:00'
+  push_day_time: '08:00',
+  label_width_mm: 50,
+  label_height_mm: 50,
+  label_dpi: 300,
+  label_rotate: false,
+  label_show_sender: true,
+  label_sender_phone: '',
+  label_sender_address: '',
+  label_show_order_no: true
 };
 const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
 const PAGE = 50;
@@ -496,7 +504,7 @@ export function createStore(adapter, opts) {
       pc.customer = codeNum(code);
       const nid = adapter.newId();
       result = {
-        id: nid, code, name, channel: normChannel(c.channel), contact: str(c.contact), country: str(c.country),
+        id: nid, code, name, channel: normChannel(c.channel), contact: str(c.contact), phone: str(c.phone), country: str(c.country),
         address: str(c.address), note: str(c.note), deleted: false, created_at: now, updated_at: now
       };
       customers.set(nid, result);
@@ -507,7 +515,7 @@ export function createStore(adapter, opts) {
       const cur = customers.get(id);
       if (!cur) throw new Error('ไม่พบลูกค้ารหัส ' + id);
       const patch = { name, updated_at: now };
-      ['contact', 'country', 'address', 'note'].forEach(k => { if (has(k)) patch[k] = str(c[k]); });
+      ['contact', 'phone', 'country', 'address', 'note'].forEach(k => { if (has(k)) patch[k] = str(c[k]); });
       if (has('channel')) patch.channel = normChannel(c.channel);
       result = Object.assign({}, cur, patch);
       customers.set(id, result);
@@ -590,7 +598,7 @@ export function createStore(adapter, opts) {
       customer = customers.get(cid);
       if (!customer) throw new Error('ไม่พบลูกค้ารหัส ' + cid);
     } else if (nc && str(nc.name)) {
-      newCust = { name: str(nc.name), channel: normChannel(nc.channel || payload.channel), contact: str(nc.contact), country: str(nc.country), address: str(nc.address), note: str(nc.note) };
+      newCust = { name: str(nc.name), channel: normChannel(nc.channel || payload.channel), contact: str(nc.contact), phone: str(nc.phone), country: str(nc.country), address: str(nc.address), note: str(nc.note) };
     }
     const channel = normChannel(str(payload.channel) || (customer ? customer.channel : '') || (newCust ? newCust.channel : '') || 'facebook');
     let customerName;
@@ -1045,6 +1053,90 @@ export function createStore(adapter, opts) {
     return out;
   }
 
+  // ----- restore from a backup file (exportAll() format) ---------------------
+  // opts.existing = result of exportAll(); opts.overwrite = write every doc from the backup.
+  const SETTING_KEEP_IF_EMPTY = ['bridge_url', 'bridge_token', 'push_vapid_key', 'gemini_api_key'];
+  function restoreBackup(data, opts2) {
+    if (!data || typeof data !== 'object' || !Array.isArray(data.plants) || !Array.isArray(data.customers) || !Array.isArray(data.orders)) {
+      throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอป');
+    }
+    opts2 = opts2 || {};
+    const overwrite = opts2.overwrite === true;
+    const ex = opts2.existing || {};
+    const ids = list => { const set = new Set(); (list || []).forEach(d => { if (d && d.id) set.add(d.id); }); return set; };
+    const exPlants = ids(ex.plants), exCust = ids(ex.customers), exOrders = ids(ex.orders);
+    // anything already in memory is also "present"
+    plants.forEach((_, id) => exPlants.add(id)); customers.forEach((_, id) => exCust.add(id)); orders.forEach((_, id) => exOrders.add(id));
+    const ops = [];
+    const out = { plants: 0, customers: 0, orders: 0, skipped: 0, settings: false };
+    const pick = (list, present, fn) => {
+      (list || []).forEach(d => {
+        if (!d || typeof d !== 'object' || !str(d.id)) return;
+        if (!overwrite && present.has(d.id)) { out.skipped++; return; }
+        fn(d);
+      });
+    };
+    pick(data.plants, exPlants, d => {
+      const doc = Object.assign({}, d);
+      const qty = num(doc.qty, 0);
+      doc.qty = qty;
+      doc.in_stock = qty > 0;
+      if (qty > 0) delete doc.sold_at; else if (!doc.sold_at) doc.sold_at = str(doc.updated_at) || nowIso();
+      doc.has_photo = !!doc.has_photo && exPlants.has(d.id);
+      plants.set(doc.id, doc);
+      ops.push({ op: 'set', path: 'plants/' + doc.id, data: doc });
+      out.plants++;
+    });
+    pick(data.customers, exCust, d => {
+      const doc = Object.assign({}, d);
+      customers.set(doc.id, doc);
+      ops.push({ op: 'set', path: 'customers/' + doc.id, data: doc });
+      out.customers++;
+    });
+    pick(data.orders, exOrders, d => {
+      const doc = deriveOrder(Object.assign({}, d));
+      orders.set(doc.id, doc);
+      ops.push({ op: 'set', path: 'orders/' + doc.id, data: doc });
+      out.orders++;
+    });
+    if (overwrite && data.settings && typeof data.settings === 'object') {
+      const sp = {};
+      Object.keys(data.settings).forEach(k => {
+        if (k === 'id') return;
+        const v = data.settings[k];
+        if (v === undefined || v === null) return;
+        if (SETTING_KEEP_IF_EMPTY.indexOf(k) >= 0 && v === '') return;
+        sp[k] = v;
+      });
+      if (Object.keys(sp).length) {
+        settingsDoc = Object.assign({}, settingsDoc || {}, sp); recomputeSettings();
+        ops.push({ op: 'merge', path: 'settings/main', data: sp });
+        out.settings = true;
+      }
+    }
+    // counters: max(current, backup)
+    const cs = data.counters && typeof data.counters === 'object' ? data.counters : {};
+    const cur = {}; Object.assign(cur, ex.counters || {});
+    const cp = {};
+    ['plant', 'customer', 'order'].forEach(k => {
+      const have = Math.max(counters[k] || 0, (cur[k] | 0));
+      if (typeof cs[k] === 'number' && cs[k] > have) cp[k] = cs[k];
+    });
+    if (cs.inv && typeof cs.inv === 'object') {
+      const inv = {};
+      Object.keys(cs.inv).forEach(k => {
+        const have = Math.max((counters.inv && counters.inv[k]) || 0, (cur.inv && cur.inv[k]) || 0);
+        if (typeof cs.inv[k] === 'number' && cs.inv[k] > have) inv[k] = cs.inv[k];
+      });
+      if (Object.keys(inv).length) cp.inv = inv;
+    }
+    mergeCounters(cp);
+    ops.push.apply(ops, counterOps(cp));
+    send(ops);
+    changed(true);
+    return out;
+  }
+
   // ----- listeners / lifecycle ---------------------------------------------
   function updatePending() {
     const p = Object.keys(pendingFlags).some(k => pendingFlags[k]);
@@ -1159,6 +1251,6 @@ export function createStore(adapter, opts) {
     saveSettings, savePlant, deletePlant, getPlantPhoto, getPlantPhotoDoc, purgeOldPhotos, loadSoldPlants, saveCustomer, deleteCustomer,
     createOrder, createOrdersBatch, updateOrder, updateOrderItems, recordPayment, deletePayment,
     markShipped, unmarkShipped, cancelOrder,
-    loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, monthStats, exportAll, importLegacy
+    loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, monthStats, exportAll, importLegacy, restoreBackup
   };
 }

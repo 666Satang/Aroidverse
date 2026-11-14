@@ -1,5 +1,5 @@
 // Orders tab, order detail sheet, payment / ship / edit dialogs, invoice preview.
-import { ctx, $, esc, num, str, money, fmtDate, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy } from './ui-core.js';
+import { ctx, $, esc, num, str, money, fmtDate, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy, closeAllSheets } from './ui-core.js';
 
 export const FLT = {
   all: () => true,
@@ -110,6 +110,7 @@ export function openOrder(id) {
         (o.note ? '<div class="card"><div class="h3">หมายเหตุ</div><div class="note-box">' + esc(o.note) + '</div></div>' : '') +
         (act ? '<div class="menu-list">' +
           '<button class="mrow" data-act="edit"><span class="ic sky">' + icon('edit') + '</span><span class="t">แก้ไขข้อมูลออเดอร์</span>' + icon('chev', 'chev') + '</button>' +
+          '<button class="mrow" data-act="label"><span class="ic mint">' + icon('box') + '</span><span class="t">ใบปะหน้า</span>' + icon('chev', 'chev') + '</button>' +
           '<button class="mrow" data-act="items"><span class="ic peach">' + icon('leaf') + '</span><span class="t">แก้ไขรายการสินค้า</span>' + icon('chev', 'chev') + '</button>' +
           (o.ship_status === 'shipped' ? '<button class="mrow" data-act="unship"><span class="ic lilac">' + icon('undo') + '</span><span class="t">ยกเลิกสถานะส่งแล้ว</span>' + icon('chev', 'chev') + '</button>' : '') +
           '<button class="mrow danger" data-act="cancel"><span class="ic rose">' + icon('close') + '</span><span class="t">ยกเลิกออเดอร์</span></button></div>' : '');
@@ -122,6 +123,7 @@ export function openOrder(id) {
           pay: () => payDlg(id), ship: () => shipDlg(id), edit: () => editDlg(id),
           items: () => import('./ui-form.js').then((m) => m.openItemsEditor(id)),
           inv: () => openInvoice(id),
+          label: () => openLabel(id),
           delpay: (d) => {
             const o2 = findOrder(id), p = (o2.payments || []).find((x) => x.id === d.id); if (!p) return;
             const t = PT[p.type] || PT.payment;
@@ -204,4 +206,99 @@ export function openInvoice(id) {
       if (!s.closed) $('.inv-wrap', s.body).innerHTML = '<div class="empty"><div class="t">สร้างบิลไม่สำเร็จ</div><p>' + esc(errMsg(e)) + '</p></div>';
     }
   })();
+}
+
+
+// ---------------------------------------------------------------- shipping label (SPEC6 §2)
+export function openLabel(id) {
+  const S = ctx.store, o = findOrder(id); if (!o) return;
+  const cu = S.getCustomer(o.customer_id);
+  const base = { name: '', phone: '', address: '', country: '' };
+  const d0 = import('./label.js');
+  const v = Object.assign({}, base), st = { copies: 1, save: false, saved: '', canvas: null, tok: 0, lm: null };
+  const setting = () => S.state.settings;
+  const sheet = openSheet({
+    title: 'ใบปะหน้า', live: false, sticky: true,
+    build(sh) {
+      sh.body.innerHTML = '<div class="lbl-stage" id="l-stage"><div class="spin"></div></div><div class="lbl-meta" id="l-meta"></div><div class="lbl-warn" id="l-warn" hidden>' + icon('alert') + '<span id="l-warn-t"></span></div>' +
+        '<div class="card" style="margin-top:14px"><label class="fld">ชื่อผู้รับ</label><input id="l-name" autocomplete="off"><label class="fld">เบอร์โทร</label><input id="l-phone" type="tel" inputmode="tel" autocomplete="off"><label class="fld">ที่อยู่</label><textarea id="l-addr" style="min-height:96px"></textarea><label class="fld">ประเทศ (ไม่ต้องใส่ถ้าส่งในไทย)</label><input id="l-country" autocomplete="off">' +
+        (cu ? '<label class="switch" style="margin-top:10px"><input type="checkbox" id="l-save"> บันทึกข้อมูลนี้ลงลูกค้า</label>' : '') + '</div>' +
+        '<div class="lbl-copies"><span>จำนวนใบ</span><div class="stepper"><button type="button" data-act="cm" aria-label="ลดจำนวนใบ">−</button><b id="l-n">1</b><button type="button" data-act="cp" aria-label="เพิ่มจำนวนใบ">+</button></div></div>';
+      sh.foot.style.flexWrap = 'wrap';
+      sh.foot.innerHTML = '<button class="btn" data-act="share" style="flex:1 0 100%">' + icon('share') + ' แชร์ / ส่งไปแอปเครื่องพิมพ์</button><button class="btn ghost" data-act="save">' + icon('download') + ' บันทึกรูป</button><button class="btn sec" data-act="print">' + icon('print') + ' พิมพ์</button>';
+    },
+  });
+  const g = (i) => $('#' + i, sheet.el);
+  const sync = () => { g('l-n').textContent = st.copies; };
+  const warn = () => {
+    const miss = []; if (!v.address.trim()) miss.push('ที่อยู่'); if (!v.phone.trim()) miss.push('เบอร์โทร');
+    g('l-warn').hidden = !miss.length; g('l-warn-t').textContent = miss.length ? 'ยังไม่มี' + miss.join(' และ ') + 'ผู้รับ' : '';
+  };
+  async function draw() {
+    const tok = ++st.tok, lm = st.lm;
+    try {
+      const data = lm.labelData({ order: findOrder(id) || o, customer: cu, settings: setting(), overrides: v });
+      const canvas = await lm.renderLabel(data, setting());
+      if (tok !== st.tok || sheet.closed) return;
+      const px = lm.labelPixelSize(setting());
+      canvas.style.width = Math.round(px.w_mm * 6.5) + 'px';
+      st.canvas = canvas;
+      const stage = g('l-stage'); stage.innerHTML = ''; stage.appendChild(canvas);
+      g('l-meta').textContent = px.w_mm + ' × ' + px.h_mm + ' มม. · ' + px.dpi + ' dpi' + (canvas.dataset.truncated ? ' · ข้อความยาวเกินพื้นที่ ถูกตัดบางส่วน' : '');
+    } catch (e) { if (!sheet.closed) g('l-stage').innerHTML = '<div class="sub">สร้างใบปะหน้าไม่สำเร็จ: ' + esc(errMsg(e)) + '</div>'; }
+  }
+  const redraw = debounce(draw, 220);
+  const fields = { 'l-name': 'name', 'l-phone': 'phone', 'l-addr': 'address', 'l-country': 'country' };
+  Object.keys(fields).forEach((i) => g(i).addEventListener('input', (e) => { v[fields[i]] = e.target.value; warn(); redraw(); }));
+  if (cu) g('l-save').addEventListener('change', (e) => { st.save = e.target.checked; });
+  d0.then((lm) => {
+    st.lm = lm;
+    const d = lm.labelData({ order: o, customer: cu, settings: setting() });
+    ['name', 'phone', 'address', 'country'].forEach((k) => { v[k] = d[k]; });
+    Object.keys(fields).forEach((i) => { g(i).value = v[fields[i]]; });
+    warn(); draw();
+  }, (e) => toast(errMsg(e), true));
+
+  function saveToCustomer() {
+    if (!cu || !st.save) return;
+    const sig = JSON.stringify(v); if (sig === st.saved) return;
+    st.saved = sig;
+    const patch = { id: cu.id, name: v.name.trim() || cu.name, phone: v.phone.trim(), address: v.address.trim(), country: v.country.trim() };
+    S.saveCustomer(patch).then(() => toast('บันทึกข้อมูลลงลูกค้าแล้ว'), (e) => { st.saved = ''; toast(errMsg(e), true); });
+  }
+  async function ready() {
+    if (!st.lm) return null;
+    st.tok++; // cancel any pending low-priority redraw result
+    await draw();
+    saveToCustomer();
+    return st.canvas;
+  }
+  bind(sheet.body, { cm: () => { st.copies = Math.max(1, st.copies - 1); sync(); }, cp: () => { st.copies = Math.min(10, st.copies + 1); sync(); } });
+  bind(sheet.foot, {
+    share: async () => {
+      const c = await ready(); if (!c) return;
+      const blob = await st.lm.labelBlob(c), r = await shareOrDownload(blob, st.lm.labelFileName(o), 'image/png');
+      if (r !== 'cancel') toast(r === 'shared' ? 'ส่งใบปะหน้าแล้ว' : 'บันทึกรูปใบปะหน้าแล้ว');
+    },
+    save: async () => {
+      const c = await ready(); if (!c) return;
+      downloadBlob(await st.lm.labelBlob(c), st.lm.labelFileName(o)); toast('บันทึกรูปใบปะหน้าแล้ว');
+    },
+    print: async () => {
+      const c = await ready(); if (!c) return;
+      const blob = await st.lm.labelBlob(c), url = URL.createObjectURL(blob), px = st.lm.labelPixelSize(setting());
+      const pr = $('#print'); pr.className = 'lbl';
+      pr.innerHTML = Array.from({ length: st.copies }, () => '<img alt="" src="' + url + '" style="width:' + px.w_mm + 'mm;height:' + px.h_mm + 'mm">').join('');
+      let style = document.getElementById('label-page'); if (style) style.remove();
+      style = document.createElement('style'); style.id = 'label-page';
+      style.textContent = '@page{size:' + px.w_mm + 'mm ' + px.h_mm + 'mm;margin:0}@media print{html,body{width:' + px.w_mm + 'mm;margin:0;padding:0}}';
+      document.head.appendChild(style);
+      const done = () => { window.removeEventListener('afterprint', done); style.remove(); pr.className = ''; pr.innerHTML = ''; setTimeout(() => URL.revokeObjectURL(url), 1000); };
+      window.addEventListener('afterprint', done);
+      const imgs = Array.from(pr.querySelectorAll('img'));
+      try { await Promise.all(imgs.map((im) => (im.decode ? im.decode() : Promise.resolve()))); } catch (e) { /* ignore */ }
+      window.print();
+    },
+  });
+  sync();
 }

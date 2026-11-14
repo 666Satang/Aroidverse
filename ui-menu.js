@@ -8,11 +8,14 @@ export const menuView = {
     const row = (act, ic, tone, t, sub) => '<button class="mrow" data-act="' + act + '"><span class="ic ' + tone + '">' + icon(ic) + '</span><span class="grow"><span class="t" style="display:block">' + t + '</span>' + (sub ? '<span class="sub">' + sub + '</span>' : '') + '</span>' + icon('chev', 'chev') + '</button>';
     el.innerHTML = '<div class="menu-list">' + row('customers', 'users', 'sky', 'ลูกค้า', 'รายชื่อและประวัติการสั่งซื้อ') + row('reports', 'chart', 'peach', 'รายงานยอดขาย', 'สรุปรายเดือน ส่งออก CSV / พิมพ์') + row('settings', 'gear', '', 'ตั้งค่า', 'ร้าน บัญชีธนาคาร บิล และ Gemini') + '</div>' +
       '<div class="menu-list">' + row('backup', 'download', 'lilac', 'สำรองข้อมูล', 'ดาวน์โหลดไฟล์ข้อมูลทั้งหมด (JSON)') +
+      row('restore', 'refresh', 'sky', 'กู้คืนจากไฟล์สำรอง', 'เลือกไฟล์สำรอง (JSON) แล้วเพิ่มข้อมูลกลับเข้าแอป') + '<input type="file" id="restore-file" accept=".json,application/json" hidden>' +
       '<button class="mrow danger" data-act="logout"><span class="ic rose">' + icon('logout') + '</span><span class="grow"><span class="t">' + (ctx.demo ? 'ออกจากโหมดตัวอย่าง' : 'ออกจากระบบ') + '</span></span></button></div>' +
       '<p class="tiny-note" style="text-align:center">Plant Orders · ข้อมูลทั้งหมดบันทึกในเครื่องก่อน แล้วซิงค์เองเมื่อมีเน็ต</p>';
+    $('#restore-file', el).addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) openRestore(f); });
     bind(el, {
       customers: () => ctx.nav.menu('customers'), reports: () => ctx.nav.menu('reports'), settings: () => ctx.nav.menu('settings'),
       backup: doBackup,
+      restore: () => { const f = $('#restore-file', el); f.value = ''; f.click(); },
       logout: () => dialog(ctx.demo ? 'ออกจากโหมดตัวอย่าง?' : 'ออกจากระบบ?', '<p>' + (ctx.demo ? 'ข้อมูลตัวอย่างจะหายไป' : 'ข้อมูลที่ยังไม่ซิงค์จะถูกส่งขึ้นเมื่อกลับมาออนไลน์ และต้องเข้าสู่ระบบอีกครั้ง') + '</p>', 'ออกจากระบบ', async () => {
         try { await ctx.adapter.signOut(); } catch (e) { /* ignore */ }
         location.href = ctx.demo ? location.pathname : location.pathname + location.search;
@@ -32,6 +35,116 @@ async function doBackup() {
     const r = await shareOrDownload(blob, name, 'application/json');
     if (r !== 'cancel') toast(r === 'shared' ? 'ส่งไฟล์สำรองข้อมูลแล้ว' : 'ดาวน์โหลดไฟล์สำรองข้อมูลแล้ว');
   } catch (e) { end(); toast(errMsg(e), true); }
+}
+
+// ---------------------------------------------------------------- restore from backup file (SPEC6 §1)
+async function openRestore(file) {
+  let data;
+  try {
+    const text = await file.text();
+    data = JSON.parse(text);
+  } catch (e) { toast('อ่านไฟล์ไม่ได้ — ไฟล์เสียหรือไม่ใช่ไฟล์ JSON', true); return; }
+  if (!data || typeof data !== 'object' || !Array.isArray(data.plants) || !Array.isArray(data.customers) || !Array.isArray(data.orders)) { toast('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอป', true); return; }
+  const end = busy('กำลังตรวจสอบไฟล์…');
+  let existing;
+  try { existing = await ctx.store.exportAll(); } catch (e) { end(); toast(errMsg(e), true); return; }
+  end();
+  const ids = (l) => new Set((l || []).map((d) => d && d.id).filter(Boolean));
+  const have = { plants: ids(existing.plants), customers: ids(existing.customers), orders: ids(existing.orders) };
+  const cnt = (k) => { const l = (data[k] || []).filter((d) => d && d.id); const pre = l.filter((d) => have[k].has(d.id)).length; return { n: l.length, add: l.length - pre, pre }; };
+  const C = { plants: cnt('plants'), customers: cnt('customers'), orders: cnt('orders') };
+  let overwrite = false;
+  const when = (() => { const t = String(data.exported_at || ''); const d = t.slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? fmtDate(d) + (hm(t) ? ' · ' + hm(t) + ' น.' : '') : 'ไม่ทราบวันที่'; })();
+  const row = (label, c) => '<tr><td>' + label + '</td><td>' + c.n + '</td><td>' + c.add + '</td><td>' + c.pre + '</td></tr>';
+  const sh = openSheet({
+    title: 'กู้คืนจากไฟล์สำรอง', sticky: true,
+    build(s) {
+      s.body.innerHTML = '<div class="card"><div class="kv"><span>ไฟล์</span><b style="font-weight:600;word-break:break-all;text-align:right">' + esc(file.name) + '</b></div><div class="kv"><span>สำรองเมื่อ</span><b style="font-weight:600">' + esc(when) + '</b></div></div>' +
+        '<div class="card" style="padding:8px 4px;margin-top:14px"><table class="rt"><thead><tr><th>ข้อมูล</th><th>ในไฟล์</th><th>เพิ่มใหม่</th><th>มีแล้ว</th></tr></thead><tbody>' + row('ต้นไม้', C.plants) + row('ลูกค้า', C.customers) + row('ออเดอร์', C.orders) + '</tbody></table></div>' +
+        '<div class="h3" style="margin-top:18px">วิธีกู้คืน</div><div class="seg" id="r-seg"><button class="on" data-o="0">เพิ่มเฉพาะที่ยังไม่มี</button><button data-o="1">เขียนทับด้วยข้อมูลสำรอง</button></div>' +
+        '<p class="sub" id="r-hint" style="margin-top:10px">เพิ่มเฉพาะรายการที่ยังไม่มีในแอป รายการที่มีอยู่แล้วจะไม่ถูกแก้ไข</p>' +
+        '<p class="rwarn" id="r-warn" hidden>ข้อมูลที่มีอยู่แล้วในแอป (รหัสเดียวกัน) จะถูกแทนที่ด้วยข้อมูลในไฟล์ และตั้งค่าร้านจะถูกกู้คืนด้วย รายการที่มีเฉพาะในแอปจะไม่ถูกลบ</p>' +
+        '<p class="sub" style="margin-top:10px">ไฟล์สำรองไม่มีรูปถ่ายต้นไม้ (มีเฉพาะรูปย่อย)</p>';
+      s.foot.innerHTML = '<button class="btn ghost" data-x="c">ยกเลิก</button><button class="btn" data-x="go">กู้คืนข้อมูล</button>';
+    },
+  });
+  const seg = $('#r-seg', sh.el);
+  seg.onclick = (e) => {
+    const b = e.target.closest('[data-o]'); if (!b) return;
+    overwrite = b.dataset.o === '1';
+    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    $('#r-warn', sh.el).hidden = !overwrite; $('#r-hint', sh.el).hidden = overwrite;
+  };
+  sh.foot.onclick = (e) => {
+    const b = e.target.closest('[data-x]'); if (!b) return;
+    if (b.dataset.x === 'c') return sh.close();
+    const n = overwrite ? C.plants.n + C.customers.n + C.orders.n : C.plants.add + C.customers.add + C.orders.add;
+    if (!n && !overwrite) { toast('ไม่มีข้อมูลใหม่ให้เพิ่ม — ข้อมูลในไฟล์มีอยู่ในแอปแล้วทั้งหมด'); return; }
+    dialog(overwrite ? 'เขียนทับด้วยข้อมูลสำรอง?' : 'กู้คืนข้อมูล?',
+      '<p>' + (overwrite ? 'จะเขียนทับข้อมูล ' + n + ' รายการ (ต้นไม้ ' + C.plants.n + ' · ลูกค้า ' + C.customers.n + ' · ออเดอร์ ' + C.orders.n + ') และตั้งค่าร้านด้วยข้อมูลในไฟล์ ย้อนกลับไม่ได้' : 'จะเพิ่มข้อมูลใหม่ ' + n + ' รายการ (ต้นไม้ ' + C.plants.add + ' · ลูกค้า ' + C.customers.add + ' · ออเดอร์ ' + C.orders.add + ')') + '</p>',
+      'กู้คืน', () => {
+        try {
+          const r = ctx.store.restoreBackup(data, { existing, overwrite });
+          toast('กู้คืนแล้ว: ต้นไม้ ' + r.plants + ' · ลูกค้า ' + r.customers + ' · ออเดอร์ ' + r.orders + (r.skipped ? ' · ข้าม ' + r.skipped : ''));
+          sh.close();
+        } catch (er) { toast(errMsg(er), true); return false; }
+      }, { danger: overwrite });
+  };
+}
+
+// ---------------------------------------------------------------- label settings (SPEC6 §2)
+const PRESETS = [[50, 30], [50, 50], [50, 70], [50, 80], [40, 60]];
+function labelHTML(st) {
+  const w = num(st.label_width_mm) || 50, h = num(st.label_height_mm) || 50;
+  const pre = PRESETS.find((p) => p[0] === w && p[1] === h);
+  const sw = (id, on, label) => '<label class="switch"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + '> ' + label + '</label>';
+  return '<div class="card" id="s-label"><div class="h3">ใบปะหน้า</div>' +
+    '<label class="fld">ขนาดสติกเกอร์ (กว้าง × สูง มม.)</label><div class="seg wrap" id="lb-seg">' + PRESETS.map((p) => '<button type="button" data-p="' + p[0] + 'x' + p[1] + '" class="' + (pre && pre[0] === p[0] && pre[1] === p[1] ? 'on' : '') + '">' + p[0] + '×' + p[1] + '</button>').join('') + '<button type="button" data-p="custom" class="' + (pre ? '' : 'on') + '">กำหนดเอง</button></div>' +
+    '<div class="mm-row" id="lb-custom"' + (pre ? ' hidden' : '') + '><input id="lb-w" type="number" inputmode="decimal" min="20" max="200" value="' + w + '" aria-label="กว้าง มม."><span>×</span><input id="lb-h" type="number" inputmode="decimal" min="20" max="300" value="' + h + '" aria-label="สูง มม."><span>มม.</span></div>' +
+    '<label class="fld">ความละเอียดเครื่องพิมพ์ (DPI)</label><select id="lb-dpi"><option value="203"' + (num(st.label_dpi) === 203 ? ' selected' : '') + '>203 dpi</option><option value="300"' + (num(st.label_dpi) === 203 ? '' : ' selected') + '>300 dpi</option></select>' +
+    '<div style="margin-top:6px">' + sw('lb-rot', st.label_rotate === true, 'หมุน 90° (ป้อนสติกเกอร์ตามความยาว)') + sw('lb-ord', st.label_show_order_no !== false, 'แสดงเลขบิล') + sw('lb-snd', st.label_show_sender !== false, 'แสดงผู้ส่ง') + '</div>' +
+    '<div id="lb-sender"><label class="fld">เบอร์โทรผู้ส่ง</label><input id="lb-sph" type="tel" inputmode="tel" autocomplete="off" value="' + esc(st.label_sender_phone) + '"><label class="fld">ที่อยู่ผู้ส่ง</label><textarea id="lb-sad" style="min-height:76px">' + esc(st.label_sender_address) + '</textarea><p class="sub" style="margin-top:8px">ชื่อผู้ส่งใช้ชื่อร้านด้านบน</p></div>' +
+    '<div class="h3" style="margin-top:18px">ตัวอย่าง</div><div class="sm-prev" id="lb-prev"><div class="spin"></div></div></div>';
+}
+function readLabel(el) {
+  const n = (id, d, lo, hi) => { const v = num($('#' + id, el).value); return Math.min(hi, Math.max(lo, v || d)); };
+  return {
+    label_width_mm: n('lb-w', 50, 20, 200), label_height_mm: n('lb-h', 50, 20, 300), label_dpi: num($('#lb-dpi', el).value) === 203 ? 203 : 300,
+    label_rotate: $('#lb-rot', el).checked, label_show_order_no: $('#lb-ord', el).checked, label_show_sender: $('#lb-snd', el).checked,
+    label_sender_phone: $('#lb-sph', el).value.trim(), label_sender_address: $('#lb-sad', el).value.trim(),
+  };
+}
+function initLabel(el) {
+  const g = (id) => $('#' + id, el);
+  const seg = g('lb-seg');
+  let lm = null, tok = 0;
+  const draw = async () => {
+    const t = ++tok;
+    try {
+      lm = lm || await import('./label.js');
+      const L = readLabel(el), shop = ($('[data-k="shop_name"]', el) || {}).value || '';
+      const set = Object.assign({}, ctx.store.state.settings, L, { shop_name: shop });
+      const data = lm.labelData({ order: { invoice_no: 'INV-202611-001' }, customer: { name: 'Hans Becker', phone: '+49 170 1234567', address: 'Musterstrasse 12\n10115 Berlin', country: 'Germany' }, settings: set });
+      const c = await lm.renderLabel(data, set);
+      if (t !== tok || !el.isConnected) return;
+      const px = lm.labelPixelSize(set); c.style.width = Math.round(px.w_mm * 5) + 'px';
+      const box = g('lb-prev'); box.innerHTML = ''; box.appendChild(c);
+    } catch (e) { if (el.isConnected) g('lb-prev').innerHTML = '<span class="sub">' + esc(errMsg(e)) + '</span>'; }
+  };
+  const soon = ((f, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(f, ms); }; })(draw, 250);
+  seg.onclick = (e) => {
+    const b = e.target.closest('[data-p]'); if (!b) return;
+    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    if (b.dataset.p === 'custom') g('lb-custom').hidden = false;
+    else { const [w, h] = b.dataset.p.split('x'); g('lb-w').value = w; g('lb-h').value = h; g('lb-custom').hidden = true; }
+    soon();
+  };
+  const sync = () => { g('lb-sender').hidden = !g('lb-snd').checked; };
+  sync();
+  ['lb-w', 'lb-h', 'lb-sph', 'lb-sad'].forEach((id) => g(id).addEventListener('input', soon));
+  ['lb-dpi', 'lb-rot', 'lb-ord', 'lb-snd'].forEach((id) => g(id).addEventListener('change', () => { sync(); soon(); }));
+  const shop = $('[data-k="shop_name"]', el); if (shop) shop.addEventListener('input', soon);
+  draw();
 }
 
 // ---------------------------------------------------------------- reports
@@ -119,16 +232,17 @@ export const settingsView = {
       '<div class="card"><div class="h3">อ่านรูปจดขายด้วย Gemini</div><label class="fld">Gemini API key</label><div class="pwrap"><input data-k="gemini_api_key" id="s-gkey" type="password" value="' + esc(st.gemini_api_key) + '" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="peek" id="s-gshow" type="button">แสดง</button></div>' +
       '<label class="fld">โมเดล</label><input data-k="gemini_model" value="' + esc(st.gemini_model) + '" autocomplete="off" autocapitalize="off">' +
       '<p class="sub" style="margin-top:12px">1. เปิด aistudio.google.com/apikey ด้วยบัญชี Google<br>2. กด Create API key<br>3. คัดลอกมาวางที่ช่องด้านบน แล้วกดบันทึก<br>ใช้ฟรี รูปจะถูกส่งไปให้ Google อ่านเฉพาะตอนกดนำเข้าเท่านั้น</p></div>' +
-      bridgeHTML(st) + pushHTML(st) + legacyHTML(st) + purgeHTML() +
+      bridgeHTML(st) + pushHTML(st) + labelHTML(st) + purgeHTML() +
       '<button class="btn block" id="s-save">บันทึกการตั้งค่า</button>';
     $('#s-gshow', el).onclick = (e) => { const i = $('#s-gkey', el), sh = i.type === 'password'; i.type = sh ? 'text' : 'password'; e.target.textContent = sh ? 'ซ่อน' : 'แสดง'; };
     $('#s-save', el).onclick = () => {
       const o = {}; el.querySelectorAll('[data-k]').forEach((x) => { o[x.dataset.k] = x.value.trim(); });
-      Object.assign(o, readBridge(el));
+      Object.assign(o, readBridge(el), readLabel(el));
       ctx.store.saveSettings(o).then(() => { toast('บันทึกการตั้งค่าแล้ว'); ctx.nav.menu(null); }, (e) => toast(errMsg(e), true));
     };
     initBridge(el);
     initPush(el);
+    initLabel(el);
   },
   update() {},
 };
@@ -163,11 +277,6 @@ function pushHTML(st) {
     '<button class="btn ghost sm block" id="p-test" type="button" style="margin-top:8px">ส่งแจ้งเตือนทดสอบ</button>' +
     '<p class="sub" style="margin-top:10px">วิธีตั้งค่า (ทำครั้งเดียว)<br>1. Firebase Console → Project settings → Cloud Messaging → Web configuration → Generate key pair แล้วคัดลอกมาวางที่ช่อง Web Push key → กดบันทึกการตั้งค่า<br>2. สร้าง Service Account key (Project settings → Service accounts → Generate new private key) วางลงในแท็บ Bridge ของชีต แล้วรันฟังก์ชัน setupPush<br>3. กลับมาที่นี่ กด "เปิดการแจ้งเตือนบนเครื่องนี้" ในแต่ละเครื่อง แล้วกด "ส่งแจ้งเตือนทดสอบ"<br>iPhone/iPad: ต้องเพิ่มแอปไว้หน้าจอโฮม (แชร์ → เพิ่มลงหน้าจอโฮม) แล้วเปิดจากไอคอนนั้น</p></div>';
 }
-function legacyHTML(st) {
-  return '<div class="card" id="s-legacy" hidden><div class="h3">ย้ายข้อมูลจากระบบเดิม</div>' +
-    '<p class="sub" id="l-msg" style="margin-bottom:12px">ดึงต้นไม้ ลูกค้า และออเดอร์จาก Google Sheet ของระบบเดิมเข้ามาในแอปนี้ (เลขที่บิลและรหัสเดิมจะคงไว้ ข้ามรายการที่มีอยู่แล้ว)</p>' +
-    '<div id="l-done" class="pill p-mint" style="margin-bottom:12px" hidden>ย้ายแล้ว</div><button class="btn sec block" id="l-go">ดึงข้อมูลจากระบบเดิม</button></div>';
-}
 function purgeHTML() {
   return '<div class="card" id="s-purge"><div class="h3">ล้างรูปต้นที่ขายไปนานแล้ว</div>' +
     '<p class="sub" style="margin-bottom:12px">ลบรูปขนาดใหญ่ของต้นที่ขายหมดไปนานแล้ว เพื่อประหยัดพื้นที่ — รูปย่อยังอยู่ ออเดอร์ไม่กระทบ</p>' +
@@ -188,12 +297,6 @@ function initBridge(el) {
   const showSheet = (u) => { const a = g('b-open'); if (u && /^https:\/\//i.test(u)) { a.href = u; a.hidden = false; } else a.hidden = true; };
   showSheet(lsGetS(SHEET_KEY));
 
-  const drawLegacy = () => {
-    const st = S.state.settings || {};
-    g('s-legacy').hidden = !typedConfigured();
-    g('l-done').hidden = !st.legacy_imported;
-    g('l-go').textContent = st.legacy_imported ? 'ดึงข้อมูลจากระบบเดิมอีกครั้ง' : 'ดึงข้อมูลจากระบบเดิม';
-  };
   const drawStat = () => {
     const box = g('b-stat');
     if (!B) { box.textContent = 'ฟีเจอร์นี้ยังไม่พร้อมใช้งาน'; return; }
@@ -206,11 +309,11 @@ function initBridge(el) {
     if (s.lastError) parts.push('ข้อผิดพลาดล่าสุด: ' + s.lastError);
     box.className = 'bstat' + (s.lastError ? ' bad' : ''); box.textContent = parts.join(' · ');
   };
-  drawStat(); drawLegacy();
+  drawStat();
   if (B) {
-    const off = B.onStatus(() => { if (!el.isConnected) { if (off) off(); return; } drawStat(); drawLegacy(); });
+    const off = B.onStatus(() => { if (!el.isConnected) { if (off) off(); return; } drawStat(); });
   }
-  el.addEventListener('input', (e) => { if (e.target.id === 'b-url' || e.target.id === 'b-tok') { drawStat(); drawLegacy(); } });
+  el.addEventListener('input', (e) => { if (e.target.id === 'b-url' || e.target.id === 'b-tok') { drawStat(); } });
 
   g('b-test').onclick = async () => {
     if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
@@ -222,7 +325,7 @@ function initBridge(el) {
       if (r && r.sheet_url) { lsSetS(SHEET_KEY, r.sheet_url); showSheet(r.sheet_url); }
       toast('เชื่อมต่อสำเร็จ');
     } catch (er) { toast(errMsg(er), true); }
-    btn.disabled = false; btn.textContent = 'ทดสอบการเชื่อมต่อ'; drawStat(); drawLegacy();
+    btn.disabled = false; btn.textContent = 'ทดสอบการเชื่อมต่อ'; drawStat();
   };
   g('b-all').onclick = async () => {
     if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
@@ -235,27 +338,6 @@ function initBridge(el) {
       toast('ซิงค์แล้ว: ออเดอร์ ' + ((r && r.orders) || 0) + ' · ต้นไม้ ' + ((r && r.plants) || 0) + ' · ลูกค้า ' + ((r && r.customers) || 0));
     } catch (er) { toast(errMsg(er), true); }
     btn.disabled = false; btn.textContent = 'ซิงค์ทั้งหมดตอนนี้'; setTimeout(() => { prog.hidden = true; }, 800); drawStat();
-  };
-
-  g('l-go').onclick = async () => {
-    if (!B) return toast('ฟีเจอร์นี้ยังไม่พร้อมใช้งาน', true);
-    const btn = g('l-go'); btn.disabled = true; btn.textContent = 'กำลังดึงข้อมูล…';
-    let data = null;
-    try { await saveB(); data = await B.fetchLegacy(); } catch (er) { toast(errMsg(er), true); }
-    btn.disabled = false; drawLegacy();
-    if (!data) return;
-    const n = (k) => (Array.isArray(data[k]) ? data[k].length : 0);
-    dialog('ย้ายข้อมูลจากระบบเดิม?', '<p>พบข้อมูลในระบบเดิม</p><div class="card flat"><div class="kv"><span>ต้นไม้</span><b>' + n('plants') + '</b></div><div class="kv"><span>ลูกค้า</span><b>' + n('customers') + '</b></div><div class="kv"><span>ออเดอร์</span><b>' + n('orders') + '</b></div></div><p class="sub">รายการที่มีรหัสซ้ำกับที่มีในแอปแล้วจะถูกข้าม จึงกดซ้ำได้อย่างปลอดภัย</p>', 'ย้ายข้อมูล', () => {
-      const end = busy('กำลังย้ายข้อมูล…');
-      return (async () => {
-        try {
-          const existing = await S.exportAll();
-          const r = await S.importLegacy(data, { existing });
-          toast('ย้ายแล้ว: ต้นไม้ ' + r.plants + ' · ลูกค้า ' + r.customers + ' · ออเดอร์ ' + r.orders + (r.skipped ? ' · ข้าม ' + r.skipped : ''));
-          drawLegacy();
-        } catch (er) { toast(errMsg(er), true); return false; } finally { end(); }
-      })();
-    });
   };
 
   let months = 6;
