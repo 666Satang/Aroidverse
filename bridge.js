@@ -8,8 +8,8 @@ const DEBOUNCE_MS = 5000;
 const PERIODIC_MS = 5 * 60 * 1000;
 const BACKOFF_MIN = 30 * 1000;
 const BACKOFF_MAX = 5 * 60 * 1000;
-export const CHUNK = { orders: 40, plants: 100, customers: 100 };
-const KEYS = ['orders', 'plants', 'customers', 'dplants', 'dcustomers'];
+export const CHUNK = { orders: 40, plants: 100, customers: 100, expenses: 100 };
+const KEYS = ['orders', 'plants', 'customers', 'dplants', 'dcustomers', 'expenses', 'dexpenses'];
 
 function lsGet(k) { try { return (globalThis.localStorage && globalThis.localStorage.getItem(k)) || null; } catch (e) { return null; } }
 function lsSet(k, v) { try { if (globalThis.localStorage) globalThis.localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
@@ -69,9 +69,11 @@ export function createBridge(store, opts) {
       (ev.orders || []).forEach(id => mark('orders', id));
       (ev.plants || []).forEach(id => { q.dplants.delete(id); mark('plants', id); });
       (ev.customers || []).forEach(id => { q.dcustomers.delete(id); mark('customers', id); });
+      (ev.expenses || []).forEach(id => { q.dexpenses.delete(id); mark('expenses', id); });
       const d = ev.deleted || {};
       (d.plants || []).forEach(id => { q.plants.delete(id); mark('dplants', id); });
       (d.customers || []).forEach(id => { q.customers.delete(id); mark('dcustomers', id); });
+      (d.expenses || []).forEach(id => { q.expenses.delete(id); mark('dexpenses', id); });
       saveQueue();
       schedule(debounceMs);
       emit();
@@ -151,8 +153,8 @@ export function createBridge(store, opts) {
 
   // Build the next chunk from the queue: returns {body, sent} or null when nothing is left.
   function nextChunk(maxSeq) {
-    const body = { orders: [], plants: [], customers: [], deleted: { plants: [], customers: [] }, settings: settingsPayload() };
-    const sent = { orders: [], plants: [], customers: [], dplants: [], dcustomers: [] };
+    const body = { orders: [], plants: [], customers: [], expenses: [], deleted: { plants: [], customers: [], expenses: [] }, settings: settingsPayload() };
+    const sent = { orders: [], plants: [], customers: [], dplants: [], dcustomers: [], expenses: [], dexpenses: [] };
     let any = false;
     const take = (key, limit, fn) => {
       for (const [id, s] of Array.from(q[key].entries())) {
@@ -170,8 +172,14 @@ export function createBridge(store, opts) {
       if (!c) return;
       if (c.deleted) body.deleted.customers.push(id); else body.customers.push(c);
     });
+    take('expenses', CHUNK.expenses, id => {
+      const e = typeof store.getExpense === 'function' ? store.getExpense(id) : null;
+      if (!e) return;
+      if (e.deleted) body.deleted.expenses.push(id); else body.expenses.push(e);
+    });
     take('dplants', CHUNK.plants, id => body.deleted.plants.push(id));
     take('dcustomers', CHUNK.customers, id => { if (body.deleted.customers.indexOf(id) < 0) body.deleted.customers.push(id); });
+    take('dexpenses', CHUNK.expenses, id => { if (body.deleted.expenses.indexOf(id) < 0) body.deleted.expenses.push(id); });
     return any ? { body, sent } : null;
   }
 
@@ -271,31 +279,35 @@ export function createBridge(store, opts) {
       const custAll = all.customers || [];
       const customers = custAll.filter(c => !c.deleted);
       const delCust = custAll.filter(c => c.deleted).map(c => c.id);
-      const total = orders.length + plants.length + customers.length;
+      const expAll = all.expenses || [];
+      const expenses = expAll.filter(e => e && !e.deleted);
+      const delExp = expAll.filter(e => e && e.deleted).map(e => e.id);
+      const total = orders.length + plants.length + customers.length + expenses.length;
       let done = 0;
       const progress = () => { try { if (typeof onProgress === 'function') onProgress(done, total); } catch (e) { /* ignore */ } };
       progress();
-      let io = 0, ip = 0, ic = 0, first = true;
-      while (io < orders.length || ip < plants.length || ic < customers.length || first) {
+      let io = 0, ip = 0, ic = 0, ie = 0, first = true;
+      while (io < orders.length || ip < plants.length || ic < customers.length || ie < expenses.length || first) {
         const o = orders.slice(io, io + CHUNK.orders);
         const p = plants.slice(ip, ip + CHUNK.plants);
         const c = customers.slice(ic, ic + CHUNK.customers);
-        const body = { orders: o, plants: p, customers: c, deleted: { plants: [], customers: first ? delCust : [] }, settings: settingsPayload() };
+        const e = expenses.slice(ie, ie + CHUNK.expenses);
+        const body = { orders: o, plants: p, customers: c, expenses: e, deleted: { plants: [], customers: first ? delCust : [], expenses: first ? delExp : [] }, settings: settingsPayload() };
         first = false;
         await post('sync', body);
-        io += o.length; ip += p.length; ic += c.length;
-        done += o.length + p.length + c.length;
+        io += o.length; ip += p.length; ic += c.length; ie += e.length;
+        done += o.length + p.length + c.length + e.length;
         progress();
       }
       // everything dirty before the snapshot is now covered
       // (deleted plants are not part of an export, so dplants stay queued; dcustomers only when they were sent above)
       KEYS.forEach(k => {
         if (k === 'dplants') return;
-        Array.from(q[k].entries()).forEach(([id, s]) => { if (s <= startSeq && (k !== 'dcustomers' || delCust.indexOf(id) >= 0)) q[k].delete(id); });
+        Array.from(q[k].entries()).forEach(([id, s]) => { if (s <= startSeq && (k !== 'dcustomers' || delCust.indexOf(id) >= 0) && (k !== 'dexpenses' || delExp.indexOf(id) >= 0)) q[k].delete(id); });
       });
       saveQueue();
       lastOk = new Date().toISOString(); lastError = null; failures = 0; backoffUntil = 0;
-      return { orders: orders.length, plants: plants.length, customers: customers.length };
+      return { orders: orders.length, plants: plants.length, customers: customers.length, expenses: expenses.length };
     } catch (e) {
       lastError = (e && e.message) || String(e);
       throw e;
@@ -329,7 +341,7 @@ export function createBridge(store, opts) {
   const pushUnregister = (fcmToken) => call('push_unregister', { fcm_token: String(fcmToken || '') });
   const pushConfig = (c) => {
     c = c || {};
-    return call('push_config', { before_enabled: !!c.before_enabled, before_time: String(c.before_time || ''), day_enabled: !!c.day_enabled, day_time: String(c.day_time || '') });
+    return call('push_config', { before_enabled: !!c.before_enabled, before_time: String(c.before_time || ''), day_enabled: !!c.day_enabled, day_time: String(c.day_time || ''), time_enabled: c.time_enabled === undefined ? true : !!c.time_enabled, time_lead_min: c.time_lead_min === undefined || !Number.isFinite(Number(c.time_lead_min)) ? 120 : Number(c.time_lead_min) });
   };
   const pushTest = () => call('push_test', {});
 

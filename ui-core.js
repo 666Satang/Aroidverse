@@ -30,6 +30,42 @@ export function fmtDate(s, short) {
   const y = +m[1], cur = String(ctx.store ? ctx.store.state.today : '').slice(0, 4);
   return +m[3] + ' ' + MON[+m[2] - 1] + (short && String(y) === cur ? '' : ' ' + y);
 }
+// ship date + optional ship time, e.g. "20 พ.ย. 14:00"
+export const validTime = (t) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t || '')) ? String(t) : '');
+export function fmtShip(o, short) {
+  const d = fmtDate(o.ship_date, short), t = validTime(o.ship_time);
+  return d + (d && t ? ' ' + t : '');
+}
+// sort key: ship date, then ship time (orders without a time last within the day)
+export const shipKey = (o) => str(o.ship_date) + ' ' + (validTime(o.ship_time) || '99:99');
+// optional-number helpers: '' / null / undefined -> null
+export const numOrNull = (v) => { if (v == null || String(v).trim() === '') return null; const x = parseFloat(v); return isNaN(x) ? null : x; };
+export const hasNum = (v) => v != null && v !== '' && !isNaN(Number(v));
+// negative numbers get the danger colour (reports)
+export const negCls = (v) => (Number(v) < -0.004 ? ' neg' : '');
+// time input with a clear button (iOS has none)
+export function timeFieldHTML(id, value, label) {
+  const v = validTime(value);
+  return '<div class="tin' + (v ? ' has' : '') + '"><input type="time" id="' + id + '" value="' + esc(v) + '" aria-label="' + esc(label || 'เวลา') + '"><button type="button" class="tclr" data-clr="' + id + '" aria-label="ล้างเวลา">' + icon('close') + '</button></div>';
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.tclr'); if (!b) return;
+  const i = b.parentNode.querySelector('input'); if (i) { i.value = ''; b.parentNode.classList.remove('has'); i.dispatchEvent(new Event('input', { bubbles: true })); }
+});
+document.addEventListener('input', (e) => { const t = e.target; if (t && t.type === 'time' && t.parentNode && t.parentNode.classList && t.parentNode.classList.contains('tin')) t.parentNode.classList.toggle('has', !!t.value); });
+// cost / profit of an order, tolerant of old documents without the derived fields
+export function costInfo(o) {
+  const items = o.items || [];
+  let cost = 0, missing = 0;
+  items.forEach((i) => { if (hasNum(i.unit_cost)) cost += Number(i.unit_cost) * num(i.qty); else missing++; });
+  const costTotal = hasNum(o.cost_total) ? Number(o.cost_total) : cost;
+  const miss = hasNum(o.cost_missing) ? Number(o.cost_missing) : missing;
+  const shipReal = hasNum(o.shipping_cost) ? Number(o.shipping_cost) : null;
+  const shipEff = hasNum(o.shipping_cost_eff) ? Number(o.shipping_cost_eff) : (shipReal != null ? shipReal : num(o.shipping_fee));
+  const profit = hasNum(o.profit) ? Number(o.profit) : Math.round((num(o.total) - costTotal - shipEff) * 100) / 100;
+  return { costTotal, missing: miss, shipReal, shipEff, profit };
+}
+
 export const CH = { facebook: 'Facebook', instagram: 'Instagram', walkin: 'หน้าร้าน', other: 'อื่นๆ' };
 export const WALKIN_NAME = 'ลูกค้าหน้าร้าน';
 export const errMsg = (e) => ((e && e.message) ? e.message : String(e)).replace(/^Error:\s*/, '');
@@ -74,6 +110,9 @@ const P = {
   refresh: '<path d="M19 8a7.5 7.5 0 0 0-13-1.5L4.5 8M4.5 4v4h4M5 16a7.5 7.5 0 0 0 13 1.5l1.5-1.5M19.5 20v-4h-4"/>',
   phone: '<path d="M6.5 4h3l1.5 4-2 1.3a10 10 0 0 0 5.7 5.7L16 13l4 1.5v3a2 2 0 0 1-2 2A14.5 14.5 0 0 1 4.5 6a2 2 0 0 1 2-2Z"/>',
   pin: '<path d="M12 21s6-5.5 6-10.5a6 6 0 0 0-12 0C6 15.5 12 21 12 21Z"/><circle cx="12" cy="10.5" r="2.2"/>',
+  wallet: '<path d="M4.5 7.5A2.5 2.5 0 0 1 7 5h10.5a1.5 1.5 0 0 1 1.5 1.5V9"/><rect x="4" y="8" width="16" height="11.5" rx="3"/><path d="M20 12.5h-3.2a1.8 1.8 0 0 0 0 3.6H20"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="3"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
   paste: '<rect x="6" y="5" width="12" height="15" rx="2.5"/><path d="M9.5 5V4h5v1M9.5 11h5M9.5 14.5h3"/>',
 };
 export function icon(name, cls) { return '<svg class="i' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (P[name] || '') + '</svg>'; }

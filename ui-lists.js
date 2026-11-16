@@ -85,10 +85,17 @@ export function openPlantForm(id) {
       const B = s.body;
       B.innerHTML = '<div class="card"><div class="row" style="gap:16px"><div class="thumb" id="p-prev" style="width:96px;height:96px;border-radius:24px"></div><div class="grow"><label class="btn sec sm block" style="cursor:pointer">' + icon('camera') + ' <span id="p-lbl">ถ่าย / เลือกรูป</span><input type="file" accept="image/*" id="p-file" hidden></label><div class="grid2" id="p-ph2" style="margin-top:8px" hidden><button class="btn ghost sm" id="p-recrop">ครอปใหม่</button><button class="btn ghost sm" id="p-nophoto">ลบรูป</button></div></div></div></div>' +
         '<div class="card"><label class="fld">ชื่อต้นไม้ *</label><input id="p-name" value="' + esc(p.name) + '" autocomplete="off"><label class="fld">รายละเอียด</label><input id="p-detail" value="' + esc(p.detail) + '" placeholder="เช่น ขนาดกระถาง / ลักษณะใบ" autocomplete="off">' +
-        '<div class="grid2"><div><label class="fld">ราคา (บาท) *</label><input id="p-price" type="number" inputmode="decimal" value="' + esc(p.price) + '"></div><div><label class="fld">จำนวน</label><input id="p-qty" type="number" inputmode="numeric" value="' + esc(p.qty) + '"></div></div>' +
+        '<div class="grid2"><div><label class="fld">ราคา (บาท) *</label><input id="p-price" type="number" inputmode="decimal" value="' + esc(p.price) + '"></div><div><label class="fld">ต้นทุน (บาท) ไม่บังคับ</label><input id="p-cost" type="number" inputmode="decimal" value="' + esc(p.cost == null ? '' : p.cost) + '" placeholder="ยังไม่ทราบ"></div>' +
+        '<div><label class="fld">จำนวน</label><input id="p-qty" type="number" inputmode="numeric" value="' + esc(p.qty) + '"></div><div class="sub" id="p-margin" style="align-self:end;padding-bottom:12px"></div></div>' +
         '<label class="fld">หมายเหตุ</label><textarea id="p-note" style="min-height:70px">' + esc(p.note) + '</textarea></div>' +
         (id ? '<button class="btn warn block" id="p-del">' + icon('trash') + ' ลบต้นไม้นี้</button>' : '');
       s.foot.innerHTML = '<button class="btn block" id="p-save">บันทึก</button>';
+      const margin = () => {
+        const pr = parseFloat($('#p-price', B).value), c = parseFloat($('#p-cost', B).value), m = $('#p-margin', B);
+        if (isNaN(pr) || isNaN(c) || $('#p-cost', B).value === '') { m.textContent = ''; return; }
+        const g = pr - c; m.innerHTML = 'กำไรต่อต้น <b class="' + (g < 0 ? 'red' : 'green') + '">' + esc(money(g)) + '</b>' + (pr > 0 ? ' (' + Math.round(g / pr * 100) + '%)' : '');
+      };
+      $('#p-price', B).addEventListener('input', margin); $('#p-cost', B).addEventListener('input', margin); margin();
       const draw = () => { $('#p-prev', B).innerHTML = preview ? '<img alt="" src="' + esc(preview) + '">' : icon('leaf'); $('#p-ph2', B).hidden = !preview; $('#p-recrop', B).hidden = !canRecrop(); $('#p-lbl', B).textContent = preview ? 'เปลี่ยนรูป' : 'ถ่าย / เลือกรูป'; };
       // re-crop is possible for a freshly chosen photo, or when the stored original still exists
       const canRecrop = () => !!((photo && photo.full) || (id && p.has_photo && photo === null) || (id && p.has_photo && photo && !photo.full));
@@ -123,7 +130,7 @@ export function openPlantForm(id) {
         const name = $('#p-name', B).value.trim(), priceS = $('#p-price', B).value;
         if (!name) return toast('กรุณากรอกชื่อต้นไม้', true);
         if (priceS === '' || num(priceS) < 0) return toast('กรุณากรอกราคา', true);
-        const rec = Object.assign({}, p0 || {}, { name, detail: $('#p-detail', B).value.trim(), price: num(priceS), qty: Math.max(0, Math.round(num($('#p-qty', B).value))), note: $('#p-note', B).value.trim() });
+        const rec = Object.assign({}, p0 || {}, { name, detail: $('#p-detail', B).value.trim(), price: num(priceS), cost: $('#p-cost', B).value.trim() === '' ? null : Math.max(0, num($('#p-cost', B).value)), qty: Math.max(0, Math.round(num($('#p-qty', B).value))), note: $('#p-note', B).value.trim() });
         S.savePlant(rec, photo).then(() => { s.close(); toast(id ? 'บันทึกแล้ว' : 'เพิ่มต้นไม้แล้ว'); }, (e) => toast(errMsg(e), true));
       };
     },

@@ -411,3 +411,65 @@ input[type=time]:focus{border-color:var(--sage);box-shadow:0 0 0 4px rgba(94,155
   #print.lbl img{display:block;margin:0;padding:0;break-after:page;page-break-after:always;image-rendering:pixelated}
   #print.lbl img:last-child{break-after:auto;page-break-after:auto}
 }
+
+/* ---- v3.5: ship time, cost & profit, reports tables, expenses ---- */
+.neg{color:var(--danger)}
+.faint{color:var(--faint)}
+.tin{position:relative}
+.tin input[type=time]{width:100%;min-width:0;text-align:left;padding-right:44px}
+.tin .tclr{position:absolute;right:2px;top:2px;width:44px;height:44px;border-radius:50%;display:none;place-items:center;color:var(--faint)}
+.tin.has .tclr{display:grid}
+.tin .tclr:active{background:#F2EFE9}
+.tin .tclr svg{width:18px;height:18px}
+/* order detail: collapsed cost card */
+.costcard{padding:6px 16px}
+.costcard.open{padding-bottom:16px}
+.costhead{display:flex;align-items:center;gap:12px;width:100%;text-align:left;min-height:56px}
+.costhead .ic{width:40px;height:40px;border-radius:14px;background:#ECE6F8;color:#6A55A8;display:grid;place-items:center;flex:none}
+.costhead .t{display:block;font-weight:700;font-size:16px}
+.costhead .sub{display:block}
+.costhead .chev{margin-left:auto;color:var(--faint);transition:transform .2s var(--ease)}
+.costhead .chev.up{transform:rotate(90deg)}
+.costcard.open .hr{margin:6px 0 8px}
+.miss{display:flex;gap:8px;align-items:flex-start;background:#FFF6DC;color:#6E5410;border-radius:14px;padding:10px 12px;font-size:13.5px;font-weight:600;line-height:1.4;margin-top:10px}
+.miss .i{width:18px;height:18px;margin-top:1px}
+/* new-order cost section */
+.costtog .chev{transition:transform .2s var(--ease)}
+#f-costc.open .costtog .chev{transform:rotate(90deg)}
+.costrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.costrow .nm{font-weight:600}
+.costrow input{width:128px;flex:none}
+/* home profit line */
+.pline{grid-column:1/-1;display:flex;align-items:center;gap:8px;min-height:48px;padding:0 16px;border-radius:var(--r);background:var(--card);box-shadow:var(--sh);text-align:left;font-weight:600;font-size:14.5px;color:var(--muted)}
+.pline b{font-size:17px;color:var(--sage-d);font-variant-numeric:tabular-nums;margin-left:auto}
+.pline.neg b{color:var(--danger)}
+.pline .sub{font-size:12px}
+.pline .chev{color:var(--faint);width:18px;height:18px}
+.pline:active{transform:scale(.985)}
+/* reports tables: sticky first column + horizontal scroll */
+.rcard{padding:6px 0;margin-top:16px;overflow:hidden}
+.rtw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.rt-w{min-width:100%;width:max-content}
+.rt-w th,.rt-w td{white-space:nowrap;padding-left:10px;padding-right:10px}
+.rt-w th:first-child,.rt-w td:first-child{position:sticky;left:0;z-index:1;background:var(--card);padding-left:14px;box-shadow:1px 0 0 var(--line)}
+.rt-w tr.tot td:first-child{background:#FAF8F4}
+.rt-w tbody tr:active td:first-child{background:var(--mint)}
+.rt td.neg{color:var(--danger)}
+.rt td.z{color:var(--faint)}
+.rt td{height:44px}
+.kv.expline{padding:10px 0;min-height:44px;text-align:left;align-items:center}
+.kv.expline>span{display:inline-flex;align-items:center;gap:2px}
+.kv.expline .chev.sm{width:16px;height:16px;color:var(--faint)}
+/* expenses */
+.wrapchips{flex-wrap:wrap;overflow:visible;margin:0;padding:0}
+.chip{min-height:40px}
+.exrow{min-height:60px}
+.exrow .num{font-weight:700;flex:none}
+.cprow{padding:6px 0;border-top:1px solid var(--line);min-height:56px}
+.cprow:first-child{border-top:0}
+.leadsel{width:auto;min-width:118px;flex:none}
+@media print{
+  #print td.neg{color:#b00}
+  #print table{font-size:10.5px}
+}
+.act .ic.rose{background:#FADDDA;color:#B4473F}

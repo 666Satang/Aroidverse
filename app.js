@@ -3,7 +3,9 @@ import { ctx, $, esc, icon, toast, openSheet, bind, closeAllSheets, refreshLiveS
 import { homeView } from './ui-home.js';
 import { ordersView } from './ui-orders.js';
 import { plantsView, customersView, openCustomerForm, openPlantForm } from './ui-lists.js';
-import { menuView, reportsView, settingsView } from './ui-menu.js';
+import { menuView, settingsView } from './ui-menu.js';
+import { reportsView } from './ui-reports.js';
+import { expensesView } from './ui-expenses.js';
 
 const LS_KEY = 'plantapp_fb_config';
 const params = new URLSearchParams(location.search);
@@ -96,14 +98,14 @@ function showFatal(e) {
 
 // ---------------------------------------------------------------- shell / router
 const TABS = [['home', 'หน้าหลัก', 'home'], ['orders', 'ออเดอร์', 'list'], ['plus'], ['plants', 'ต้นไม้', 'leaf'], ['menu', 'เมนู', 'menu']];
-const SUB_TITLES = { customers: 'ลูกค้า', reports: 'รายงานยอดขาย', settings: 'ตั้งค่า' };
+const SUB_TITLES = { customers: 'ลูกค้า', reports: 'รายงานยอดขาย', expenses: 'ค่าใช้จ่าย', settings: 'ตั้งค่า' };
 let tab = 'home', cur = null, curEl = null, raf = 0;
 
 function currentView() {
   if (tab === 'home') return homeView;
   if (tab === 'orders') return ordersView;
   if (tab === 'plants') return plantsView;
-  return { customers: customersView, reports: reportsView, settings: settingsView }[ctx.ui.menu] || menuView;
+  return { customers: customersView, reports: reportsView, expenses: expensesView, settings: settingsView }[ctx.ui.menu] || menuView;
 }
 function renderTabbar() {
   $('#tabbar').innerHTML = '<div class="tabbar-in">' + TABS.map((t) => t.length === 1
@@ -118,7 +120,7 @@ function renderHeader() {
   if (top._key === key) return; top._key = key;
   top.innerHTML = '<div class="top-in">' + (sub ? '<button class="back" data-act="back" aria-label="กลับ">' + icon('back') + '</button>' : '') +
     '<div class="brand">' + (sub ? '' : '<span class="mark">' + icon('leaf') + '</span>') + '<span>' + esc(title) + '</span></div>' + stat +
-    (sub === 'customers' ? '<button class="btn sec sm" data-act="addcust">' + icon('plus') + ' เพิ่ม</button>' : '') + '</div>';
+    (sub === 'customers' ? '<button class="btn sec sm" data-act="addcust">' + icon('plus') + ' เพิ่ม</button>' : '') + (sub === 'expenses' ? '<button class="btn sec sm" data-act="addexp">' + icon('plus') + ' เพิ่ม</button>' : '') + '</div>';
 }
 function mountView() {
   cur = currentView();
@@ -143,7 +145,7 @@ function goTab(name) {
 }
 ctx.nav = {
   tab: goTab,
-  menu(v) { tab = 'menu'; ctx.ui.menu = v; closeAllSheets(); mountView(); },
+  menu(v, arg) { tab = 'menu'; ctx.ui.menu = v; ctx.ui.expYm = v === 'expenses' && arg ? arg : null; closeAllSheets(); mountView(); },
   orders(f) { closeAllSheets(); ctx.ui.of = f || 'all'; ctx.ui.oq = ''; ctx.ui.limO = 60; tab = 'orders'; ctx.ui.menu = null; mountView(); },
   rerender: schedule,
 };
@@ -153,7 +155,7 @@ function openPlus() {
     title: 'สร้างใหม่',
     build(sh) {
       const a = (k, ic, tone, t, sub) => '<button class="act" data-act="' + k + '"><span class="ic ' + tone + '">' + icon(ic) + '</span><span><span class="t" style="display:block">' + t + '</span><span class="sub">' + sub + '</span></span></button>';
-      sh.body.innerHTML = a('order', 'list', '', 'ออเดอร์ใหม่', 'จากแชท Facebook / Instagram') + a('quick', 'bolt', 'peach', 'ขายหน้าร้านด่วน', 'เลือกต้นไม้ แล้วบันทึก จบใน 3 แตะ') + a('import', 'camera', 'sky', 'นำเข้าจากรูปจดขาย', 'ถ่ายรูปสมุดจด ให้ AI อ่านเป็นออเดอร์') + a('plant', 'leaf', 'lilac', 'เพิ่มต้นไม้', 'ใส่ชื่อ ราคา และรูป');
+      sh.body.innerHTML = a('order', 'list', '', 'ออเดอร์ใหม่', 'จากแชท Facebook / Instagram') + a('quick', 'bolt', 'peach', 'ขายหน้าร้านด่วน', 'เลือกต้นไม้ แล้วบันทึก จบใน 3 แตะ') + a('import', 'camera', 'sky', 'นำเข้าจากรูปจดขาย', 'ถ่ายรูปสมุดจด ให้ AI อ่านเป็นออเดอร์') + a('plant', 'leaf', 'lilac', 'เพิ่มต้นไม้', 'ใส่ชื่อ ราคา ต้นทุน และรูป') + a('expense', 'wallet', 'rose', 'บันทึกค่าใช้จ่าย', 'ค่าที่ วัสดุ ค่าขนส่ง ฯลฯ');
     },
   });
   bind(s.body, {
@@ -161,6 +163,7 @@ function openPlus() {
     quick: () => { s.close(); import('./ui-form.js').then((m) => m.openOrderForm({ quick: true })); },
     import: () => { s.close(); if (formMod) formMod.startImport(); else import('./ui-form.js').then((m) => m.startImport()); },
     plant: () => { s.close(); openPlantForm(''); },
+    expense: () => { s.close(); import('./ui-expenses.js').then((m) => m.openExpenseForm()); },
   });
 }
 
@@ -177,6 +180,7 @@ function showApp(store) {
   $('#top').addEventListener('click', (e) => {
     const t = e.target.closest('[data-act]'); if (!t) return;
     if (t.dataset.act === 'back') { ctx.ui.menu = null; mountView(); } else if (t.dataset.act === 'addcust') openCustomerForm('');
+    else if (t.dataset.act === 'addexp') import('./ui-expenses.js').then((m) => m.openExpenseForm());
   });
   store.subscribe(schedule);
   if (store.onError) store.onError((e) => toast(errMsg(e), true));

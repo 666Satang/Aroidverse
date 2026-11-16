@@ -232,15 +232,17 @@ function seed(adapter, putRaw) {
   const palette = [['#E8F3EC', '#5E9B7B'], ['#FCE9DF', '#E39A74'], ['#EDE8F7', '#8F7BC4'], ['#E6F0F8', '#6B9CC4']];
 
   const P = [
-    ['P0001', 'Monstera Albo Variegata', 'ใบด่างขาวสวย รากแน่น กระถาง 6 นิ้ว', 4500, 1],
-    ['P0002', 'Philodendron Pink Princess', 'ด่างชมพูเข้ม ต้นสูง 30 ซม.', 1800, 2],
-    ['P0003', 'Alocasia Frydek Variegated', 'ด่างเขียวขาว ใบใหญ่', 950, 1],
-    ['P0004', 'Hoya Kerrii Variegated', 'ใบหัวใจด่างครีม', 650, 5],
-    ['P0005', 'Thai Constellation', 'ด่างกระจายแบบดาว ต้นใหญ่', 7800, 1],
-    ['P0006', 'Syngonium Albo', 'ด่างขาว โตไว', 350, 3],
-    ['P0007', 'Anthurium Warocqueanum', 'ใบกำมะหยี่ยาว 60 ซม.', 6500, 1],
-    ['P0008', 'Philodendron Spiritus Sancti', 'ตัวหายากมาก ขายแล้ว', 25000, 0]
+    ['P0001', 'Monstera Albo Variegata', 'ใบด่างขาวสวย รากแน่น กระถาง 6 นิ้ว', 4500, 1, 2500],
+    ['P0002', 'Philodendron Pink Princess', 'ด่างชมพูเข้ม ต้นสูง 30 ซม.', 1800, 2, 900],
+    ['P0003', 'Alocasia Frydek Variegated', 'ด่างเขียวขาว ใบใหญ่', 950, 1, 400],
+    ['P0004', 'Hoya Kerrii Variegated', 'ใบหัวใจด่างครีม', 650, 5, 250],
+    ['P0005', 'Thai Constellation', 'ด่างกระจายแบบดาว ต้นใหญ่', 7800, 1, 4000],
+    ['P0006', 'Syngonium Albo', 'ด่างขาว โตไว', 350, 3, 120],
+    ['P0007', 'Anthurium Warocqueanum', 'ใบกำมะหยี่ยาว 60 ซม.', 6500, 1, null],   // cost left unknown on purpose
+    ['P0008', 'Philodendron Spiritus Sancti', 'ตัวหายากมาก ขายแล้ว', 25000, 0, 14000]
   ];
+  const plantCost = {};
+  P.forEach(r => { plantCost[r[0]] = r[5]; });
   const plantId = {};
   P.forEach((r, i) => {
     const id = adapter.newId();
@@ -249,7 +251,7 @@ function seed(adapter, putRaw) {
     const pal = palette[i % palette.length];
     const doc = {
       code: r[0], name: r[1], detail: r[2], price: r[3], qty: r[4], in_stock: r[4] > 0,
-      thumb: svgThumb(pal[0], pal[1], 96), has_photo: hasPhoto, note: '',
+      thumb: svgThumb(pal[0], pal[1], 96), has_photo: hasPhoto, note: '', cost: r[5],
       created_at: iso(addDays(today, -40 + i)), updated_at: iso(addDays(today, -40 + i))
     };
     if (r[4] === 0) { doc.sold_at = iso(lastMonthDay); doc.updated_at = doc.sold_at; }
@@ -270,7 +272,8 @@ function seed(adapter, putRaw) {
     putRaw('customers', id, { code: r[0], name: r[1], channel: r[2], contact: r[3], phone: r[6] || '', country: r[4], address: r[5], note: '', deleted: false, created_at: iso(addDays(today, -60 + i)), updated_at: iso(addDays(today, -60 + i)) });
   });
 
-  const item = (code, name, price, qty) => ({ plant_id: code ? plantId[code] : '', code: code || '', name, unit_price: price, qty });
+  // unit_cost: plants snapshot their cost (like the app does); `cost` overrides (undefined = snapshot, null = unknown)
+  const item = (code, name, price, qty, cost) => ({ plant_id: code ? plantId[code] : '', code: code || '', name, unit_price: price, qty, unit_cost: cost !== undefined ? cost : (code ? plantCost[code] : 40) });
   const pay = (date, amount, type, note) => ({ id: adapter.newId(), date, amount, type, note: note || '' });
   const invCount = {};
   const mkOrder = (n, o) => {
@@ -289,17 +292,22 @@ function seed(adapter, putRaw) {
     putRaw('orders', id, doc);
   };
   // 1. unpaid, ships tomorrow
-  mkOrder(1, { cust: 'C0001', order_date: addDays(today, -1), ship_date: addDays(today, 1), items: [item('P0002', 'Philodendron Pink Princess', 1800, 1), item('', 'Sphagnum moss pack', 120, 2)], shipping_fee: 450, note: 'ขอรากสะอาดๆ' });
+  mkOrder(1, { cust: 'C0001', order_date: addDays(today, -1), ship_date: addDays(today, 1), ship_time: '14:00', items: [item('P0002', 'Philodendron Pink Princess', 1800, 1), item('', 'Sphagnum moss pack', 120, 2)], shipping_fee: 450, note: 'ขอรากสะอาดๆ' });
   // 2. deposit only, ships in 3 days
-  mkOrder(2, { cust: 'C0002', order_date: addDays(today, -2), ship_date: addDays(today, 3), items: [item('P0004', 'Hoya Kerrii Variegated', 650, 2), item('P0006', 'Syngonium Albo', 350, 1)], shipping_fee: 380, payments: [pay(addDays(today, -2), 1000, 'deposit', 'โอนมัดจำ')] });
+  mkOrder(2, { cust: 'C0002', order_date: addDays(today, -2), ship_date: addDays(today, 3), items: [item('P0004', 'Hoya Kerrii Variegated', 650, 2), item('P0006', 'Syngonium Albo', 350, 1)], shipping_fee: 380, shipping_cost: 320, payments: [pay(addDays(today, -2), 1000, 'deposit', 'โอนมัดจำ')] });
   // 3. fully paid but shipment overdue
-  mkOrder(3, { cust: 'C0004', order_date: addDays(today, -6), ship_date: addDays(today, -3), items: [item('P0003', 'Alocasia Frydek Variegated', 950, 1)], shipping_fee: 500, discount: 50, payments: [pay(addDays(today, -6), 1400, 'payment')] });
+  mkOrder(3, { cust: 'C0004', order_date: addDays(today, -6), ship_date: addDays(today, -3), items: [item('P0003', 'Alocasia Frydek Variegated', 950, 1, null)], shipping_fee: 500, discount: 50, payments: [pay(addDays(today, -6), 1400, 'payment')] });
   // 4. walk-in, paid + handed over today
   mkOrder(4, { cust: 'C0003', order_date: today, items: [item('P0006', 'Syngonium Albo', 350, 1), item('P0004', 'Hoya Kerrii Variegated', 650, 1)], ship_status: 'shipped', shipped_date: today, payments: [pay(today, 1000, 'payment')] });
   // 5. cancelled
   mkOrder(5, { cust: 'C0001', order_date: addDays(today, -4), items: [item('P0001', 'Monstera Albo Variegata', 4500, 1)], status: 'cancelled', payments: [pay(addDays(today, -4), 2000, 'deposit')], note: 'ลูกค้ายกเลิก' });
   // 6. last month, paid + shipped (the sold-out plant)
   mkOrder(6, { cust: 'C0002', order_date: lastMonthDay, items: [item('P0008', 'Philodendron Spiritus Sancti', 25000, 1)], shipping_fee: 800, ship_status: 'shipped', shipped_date: addDays(lastMonthDay, 2), tracking_no: 'EE123456789TH', ship_date: addDays(lastMonthDay, 2), payments: [pay(lastMonthDay, 12900, 'deposit'), pay(addDays(lastMonthDay, 1), 12900, 'payment')] });
+
+  const exp = (date, category, amount, note) => putRaw('expenses', adapter.newId(), { date, ym: date.slice(0, 7), category, amount, note: note || '', deleted: false, created_at: iso(date, '09:00:00'), updated_at: iso(date, '09:00:00') });
+  exp(firstOfMonth, 'ค่าที่', 1500, 'ค่าที่ตลาดนัด');
+  exp(today, 'วัสดุสิ้นเปลือง', 320, 'กระถางและสแฟกนัมมอส');
+  exp(lastMonthDay, 'ค่าการตลาด', 600, 'โฆษณา Facebook');
 
   const inv = {};
   Object.keys(invCount).forEach(k => { inv[k] = invCount[k]; });

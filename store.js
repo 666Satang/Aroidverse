@@ -7,6 +7,7 @@ const TZ = 'Asia/Bangkok';
 export const CHANNELS = ['facebook', 'instagram', 'walkin', 'other'];
 export const PAY_TYPES = ['deposit', 'payment', 'refund'];
 export const WALKIN_NAME = 'ลูกค้าหน้าร้าน';
+export const EXPENSE_CATEGORIES = ['ค่าที่', 'วัสดุสิ้นเปลือง', 'ค่าขนส่ง', 'ค่าการตลาด', 'ค่าแรง', 'อื่นๆ'];
 export const DEFAULT_SETTINGS = {
   shop_name: 'My Plant Shop',
   bank_name: 'Kasikorn Bank (KBank)',
@@ -40,7 +41,9 @@ export const DEFAULT_SETTINGS = {
   printer_density: 3,
   printer_direction: 'top',
   printer_label_type: 1,
-  printer_auto_print: true
+  printer_auto_print: true,
+  push_time_enabled: true,
+  push_time_lead_min: 120
 };
 const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
 const PAGE = 50;
@@ -83,13 +86,29 @@ function assertDate(v) {
   if (s && !/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('รูปแบบวันที่ไม่ถูกต้อง: ' + s);
   return s;
 }
+export function normTime(v) {
+  const s = str(v);
+  if (!s) return '';
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(s);
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Error('รูปแบบเวลาไม่ถูกต้อง: ' + s);
+  return pad(Number(m[1]), 2) + ':' + m[2];
+}
+// cost value: '' / null / undefined / NaN -> null, else a number >= 0 (rounded to 2 decimals)
+function costVal(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = num(v, null);
+  if (n === null) return null;
+  if (n < 0) throw new Error('ต้นทุนต้องไม่ติดลบ');
+  return round2(n);
+}
 function codeNum(code) { const n = parseInt(String(code || '').replace(/\D+/g, ''), 10); return Number.isFinite(n) ? n : 0; }
 function pad(n, d) { let s = String(n); while (s.length < d) s = '0' + s; return s; }
 
 // Recompute every derived field of an order (totals, payments aggregate, status, open flag...).
 export function deriveOrder(o) {
   const items = (o.items || []).map(i => ({
-    plant_id: i.plant_id || '', code: i.code || '', name: i.name, unit_price: round2(i.unit_price), qty: i.qty
+    plant_id: i.plant_id || '', code: i.code || '', name: i.name, unit_price: round2(i.unit_price), qty: i.qty,
+    unit_cost: (i.unit_cost === undefined || i.unit_cost === null || i.unit_cost === '' || !Number.isFinite(Number(i.unit_cost))) ? null : round2(Math.max(0, Number(i.unit_cost)))
   }));
   const subtotal = round2(items.reduce((s, i) => s + i.unit_price * i.qty, 0));
   const shipping_fee = round2(Math.max(0, num(o.shipping_fee, 0)));
@@ -110,20 +129,32 @@ export function deriveOrder(o) {
   const deposit_amount = round2(Math.max(0, dep));
   const payment_status = payStatus(total, paid_amount);
   const status = o.status === 'cancelled' ? 'cancelled' : 'active';
+  const cost_total = round2(items.reduce((s, i) => s + (i.unit_cost === null ? 0 : i.unit_cost * i.qty), 0));
+  const cost_missing = items.filter(i => i.unit_cost === null).length;
+  const rawShipCost = (o.shipping_cost === undefined || o.shipping_cost === null || o.shipping_cost === '') ? null : num(o.shipping_cost, null);
+  const shipping_cost = rawShipCost === null ? null : round2(Math.max(0, rawShipCost));
+  const shipping_cost_eff = shipping_cost === null ? shipping_fee : shipping_cost;
+  const profit = round2(total - cost_total - shipping_cost_eff);
   const ship_status = o.ship_status === 'shipped' ? 'shipped' : 'pending';
   return Object.assign({}, o, {
     items, items_summary: summarizeItems(items), subtotal, shipping_fee, discount, total,
     payments, pay_yms: yms, paid_amount, deposit_amount, payment_status,
     paid_date: paid_amount > 0 ? last : '',
     ship_status, status, ym: ymOf(o.order_date),
+    ship_time: str(o.ship_time), shipping_cost, cost_total, cost_missing, shipping_cost_eff, profit,
     open: status === 'active' && (payment_status !== 'paid' || ship_status === 'pending')
   });
 }
 
 function emptyMonthRow(month, year) {
-  return { month, ym: year + '-' + pad(month, 2), orders: 0, plants: 0, sales: 0, facebook: 0, instagram: 0, walkin: 0, other: 0, received: 0, outstanding: 0, cancelled: 0 };
+  return {
+    month, ym: year + '-' + pad(month, 2), orders: 0, plants: 0, sales: 0, facebook: 0, instagram: 0, walkin: 0, other: 0, received: 0, outstanding: 0, cancelled: 0,
+    cogs: 0, shipping_cost: 0, shipping_fee: 0, gross_profit: 0, expenses: 0, net_profit: 0, cost_missing: 0
+  };
 }
-const REPORT_KEYS = ['orders', 'plants', 'sales', 'facebook', 'instagram', 'walkin', 'other', 'received', 'outstanding', 'cancelled'];
+const REPORT_KEYS = ['orders', 'plants', 'sales', 'facebook', 'instagram', 'walkin', 'other', 'received', 'outstanding', 'cancelled',
+  'cogs', 'shipping_cost', 'shipping_fee', 'gross_profit', 'expenses', 'net_profit', 'cost_missing'];
+const DAY_KEYS = ['orders', 'plants', 'sales', 'cogs', 'shipping_cost', 'gross_profit', 'received', 'cost_missing'];
 
 // ---------------------------------------------------------------------------
 // Store
@@ -138,6 +169,7 @@ export function createStore(adapter, opts) {
   const plants = new Map();
   const customers = new Map();
   const orders = new Map();
+  const expenses = new Map();
   let counters = {};
   let settingsDoc = null;
   const photoCache = new Map();
@@ -146,7 +178,7 @@ export function createStore(adapter, opts) {
   const state = {
     ready: false, online: true, pending: false, today: today(),
     settings: Object.assign({}, DEFAULT_SETTINGS),
-    plants: [], customers: [], orders: [], hasMoreOrders: true, hasMoreSold: true
+    plants: [], customers: [], orders: [], expenses: [], hasMoreOrders: true, hasMoreSold: true
   };
 
   const subs = new Set();
@@ -179,6 +211,10 @@ export function createStore(adapter, opts) {
       if (a.order_date !== b.order_date) return a.order_date < b.order_date ? 1 : -1;
       return codeNum(b.code) - codeNum(a.code);
     });
+    state.expenses = sortExpenses(Array.from(expenses.values()).filter(e => !e.deleted));
+  }
+  function sortExpenses(list) {
+    return list.slice().sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1) : (String(a.created_at || '') < String(b.created_at || '') ? 1 : (String(a.created_at || '') > String(b.created_at || '') ? -1 : 0))));
   }
   function changed(local) {
     if (local) { localVer++; reportMemo.clear(); }
@@ -204,9 +240,10 @@ export function createStore(adapter, opts) {
     }
     if (src.gone) { counters.gone = Object.assign({}, counters.gone || {}, src.gone); }
   }
+  function mapOf(col) { return col === 'plants' ? plants : (col === 'customers' ? customers : (col === 'expenses' ? expenses : orders)); }
   function upsert(col, d) {
     if (!d || !d.id) return false;
-    const map = col === 'plants' ? plants : (col === 'customers' ? customers : orders);
+    const map = mapOf(col);
     const local = map.get(d.id);
     if (local) {
       const ghost = col === 'plants' && !local.name;
@@ -259,7 +296,8 @@ export function createStore(adapter, opts) {
   }
 
   // Validate + normalise items. old = {plantId: qty} of the order being edited (null for new orders).
-  function normItems(itemsIn, old) {
+  function normItems(itemsIn, old, prev) {
+    const used = new Set();
     if (!Array.isArray(itemsIn) || !itemsIn.length) throw new Error('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ');
     const items = [];
     const need = {};
@@ -280,7 +318,20 @@ export function createStore(adapter, opts) {
       let price = (it.unit_price === undefined || it.unit_price === null || it.unit_price === '')
         ? (plant ? plant.price : 0) : num(it.unit_price, 0);
       if (price < 0) throw new Error('ราคาต้องไม่ติดลบ (' + name + ')');
-      items.push({ plant_id: pid, code: pid ? code : '', name, unit_price: round2(price), qty });
+      // unit_cost: explicit value wins; else keep the previous line's cost (edits) or snapshot the plant's cost
+      let cost = costVal(it.unit_cost);
+      if (cost === null) {
+        let kept = false;
+        if (prev) {
+          for (let k = 0; k < prev.length; k++) {
+            const pv = prev[k];
+            if (used.has(k)) continue;
+            if (pid ? pv.plant_id === pid : (!pv.plant_id && pv.name === name)) { used.add(k); kept = true; cost = pv.unit_cost === undefined ? null : pv.unit_cost; break; }
+          }
+        }
+        if (!kept && plant) cost = plant.cost === undefined || plant.cost === null ? null : num(plant.cost, null);
+      }
+      items.push({ plant_id: pid, code: pid ? code : '', name, unit_price: round2(price), qty, unit_cost: cost });
     });
     return { items, need };
   }
@@ -294,17 +345,17 @@ export function createStore(adapter, opts) {
   // report the ids touched by a local commit to onLocalChange listeners (derived from the ops)
   function emitLocal(ops) {
     if (!localCbs.size) return;
-    const ev = { orders: [], plants: [], customers: [], deleted: { plants: [], customers: [] } };
+    const ev = { orders: [], plants: [], customers: [], expenses: [], deleted: { plants: [], customers: [], expenses: [] } };
     const add = (list, id) => { if (list.indexOf(id) < 0) list.push(id); };
     ops.forEach(o => {
-      const m = /^(orders|plants|customers)\/([^/]+)$/.exec(o.path || '');
+      const m = /^(orders|plants|customers|expenses)\/([^/]+)$/.exec(o.path || '');
       if (!m) return;
       const col = m[1], id = m[2];
-      if (o.op === 'delete') { if (col === 'plants' || col === 'customers') add(ev.deleted[col], id); }
-      else if (col === 'customers' && o.data && o.data.deleted === true) add(ev.deleted.customers, id);
+      if (o.op === 'delete') { if (col === 'plants' || col === 'customers' || col === 'expenses') add(ev.deleted[col], id); }
+      else if ((col === 'customers' || col === 'expenses') && o.data && o.data.deleted === true) add(ev.deleted[col], id);
       else add(ev[col], id);
     });
-    if (!ev.orders.length && !ev.plants.length && !ev.customers.length && !ev.deleted.plants.length && !ev.deleted.customers.length) return;
+    if (!ev.orders.length && !ev.plants.length && !ev.customers.length && !ev.expenses.length && !ev.deleted.plants.length && !ev.deleted.customers.length && !ev.deleted.expenses.length) return;
     localCbs.forEach(fn => { try { fn(ev); } catch (e) { if (typeof console !== 'undefined') console.error(e); } });
   }
   function onLocalChange(fn) { localCbs.add(fn); return () => localCbs.delete(fn); }
@@ -369,6 +420,7 @@ export function createStore(adapter, opts) {
     const qty = has('qty') ? num(plant.qty, 1) : null;
     if (price !== null && price < 0) throw new Error('ราคาต้องไม่ติดลบ');
     if (qty !== null && (qty < 0 || !Number.isFinite(qty))) throw new Error('จำนวนต้องไม่ติดลบ');
+    const cost = has('cost') ? costVal(plant.cost) : undefined;
     const recrop = !!(photo && typeof photo.full !== 'string' && photo.crop);
     if (photo && (typeof photo.thumb !== 'string' || (!recrop && typeof photo.full !== 'string'))) throw new Error('ข้อมูลรูปไม่ถูกต้อง');
     const crop = photo && photo.crop ? normCrop(photo.crop) : null;
@@ -385,7 +437,7 @@ export function createStore(adapter, opts) {
       const nid = adapter.newId();
       result = {
         id: nid, code, name, detail: str(plant.detail), price: price === null ? 0 : round2(price), qty: q, in_stock: q > 0,
-        thumb: photo ? photo.thumb : '', has_photo: !!photo, note: str(plant.note), sold_count: 0, created_at: now, updated_at: now
+        thumb: photo ? photo.thumb : '', has_photo: !!photo, note: str(plant.note), cost: cost === undefined ? null : cost, sold_count: 0, created_at: now, updated_at: now
       };
       if (q <= 0) result.sold_at = now;
       plants.set(nid, result);
@@ -400,6 +452,7 @@ export function createStore(adapter, opts) {
       if (has('detail')) patch.detail = str(plant.detail);
       if (price !== null) patch.price = round2(price);
       if (has('note')) patch.note = str(plant.note);
+      if (cost !== undefined) patch.cost = cost;
       if (qty !== null && qty !== cur.qty) Object.assign(patch, stockPatch(cur, qty, now));
       if (recrop && !cur.has_photo) throw new Error('ยังไม่มีรูปให้ครอป');
       if (photo) { patch.thumb = photo.thumb; patch.has_photo = true; }
@@ -614,6 +667,8 @@ export function createStore(adapter, opts) {
 
     const orderDate = assertDate(payload.order_date) || plan.today;
     const shipDate = assertDate(payload.ship_date);
+    const shipTime = normTime(payload.ship_time);
+    const shippingCost = costVal(payload.shipping_cost);
     const shipping = round2(Math.max(0, num(payload.shipping_fee, 0)));
     const discount = round2(Math.max(0, num(payload.discount, 0)));
     const subtotal = round2(items.reduce((s, x) => s + x.unit_price * x.qty, 0));
@@ -639,7 +694,7 @@ export function createStore(adapter, opts) {
       id, code: oc.code, invoice_no: inv.no, order_date: orderDate, customer_id: customer ? customer.id : '',
       customer_name: customerName, channel, items, shipping_fee: shipping, discount,
       payments: paid > 0 ? [{ id: adapter.newId(), date: orderDate, amount: paid, type: ptype, note: '' }] : [],
-      ship_date: shipDate, ship_status: shipped ? 'shipped' : 'pending', shipped_date: shipped ? orderDate : '',
+      ship_date: shipDate, ship_time: shipTime, shipping_cost: shippingCost, ship_status: shipped ? 'shipped' : 'pending', shipped_date: shipped ? orderDate : '',
       tracking_no: '', status: 'active', note: str(payload.note), created_at: plan.now, updated_at: plan.now
     });
     plan.orders.push(order);
@@ -699,6 +754,8 @@ export function createStore(adapter, opts) {
     const has = k => Object.prototype.hasOwnProperty.call(patch, k) && patch[k] !== undefined;
     const ch = {};
     if (has('ship_date')) ch.ship_date = assertDate(patch.ship_date);
+    if (has('ship_time')) ch.ship_time = normTime(patch.ship_time);
+    if (has('shipping_cost')) ch.shipping_cost = costVal(patch.shipping_cost);
     if (has('order_date')) {
       const od = assertDate(patch.order_date);
       if (!od) throw new Error('กรุณาระบุวันที่สั่งซื้อ');
@@ -721,7 +778,7 @@ export function createStore(adapter, opts) {
         old.code[it.plant_id] = it.code; old.name[it.plant_id] = it.name;
       }
     });
-    const ni = normItems(itemsIn, old);
+    const ni = normItems(itemsIn, old, o.items);
     const ids = {};
     Object.keys(old.qty).forEach(k => { ids[k] = true; });
     Object.keys(ni.need).forEach(k => { ids[k] = true; });
@@ -754,6 +811,43 @@ export function createStore(adapter, opts) {
     const next = commitOrder(o, { items: ni.items }, plantOps);
     ensure.forEach(ensurePlant);
     return next;
+  }
+
+  // costs may be edited on any non-cancelled order (shipped / paid included)
+  async function updateOrderCosts(id, patch) {
+    patch = patch || {};
+    const o = mustOrder(id);
+    assertActive(o);
+    const has = k => Object.prototype.hasOwnProperty.call(patch, k) && patch[k] !== undefined;
+    const ch = {};
+    const upd = [];
+    if (patch.items !== undefined && !Array.isArray(patch.items)) throw new Error('ข้อมูลต้นทุนไม่ถูกต้อง');
+    (patch.items || []).forEach(x => {
+      x = x || {};
+      const idx = Number(x.index);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= o.items.length) throw new Error('ไม่พบรายการสินค้าลำดับที่ ' + (idx + 1));
+      upd.push([idx, costVal(x.unit_cost)]);
+    });
+    if (has('shipping_cost')) ch.shipping_cost = costVal(patch.shipping_cost);
+    if (upd.length) {
+      const items = o.items.map(it => Object.assign({}, it));
+      upd.forEach(([idx, c]) => { items[idx].unit_cost = c; });
+      ch.items = items;
+    }
+    const now = nowIso();
+    const plantOps = [];
+    const seen = new Set();
+    upd.forEach(([idx, c]) => {
+      const pid = o.items[idx].plant_id;
+      if (!pid || c === null || seen.has(pid)) return;
+      const p = getPlant(pid);
+      if (!p || (p.cost !== null && p.cost !== undefined)) return;
+      seen.add(pid);
+      const pp = { cost: c, updated_at: now };
+      plants.set(pid, applyPatch(Object.assign({}, plants.get(pid)), pp));
+      plantOps.push({ op: 'merge', path: 'plants/' + pid, data: pp });
+    });
+    return commitOrder(o, ch, plantOps);
   }
 
   async function recordPayment(id, p) {
@@ -817,6 +911,65 @@ export function createStore(adapter, opts) {
     return next;
   }
 
+  // ----- expenses ----------------------------------------------------------
+  async function saveExpense(e) {
+    e = e || {};
+    const has = k => Object.prototype.hasOwnProperty.call(e, k) && e[k] !== undefined;
+    const id = str(e.id);
+    const cur = id ? expenses.get(id) : null;
+    if (id && !cur) throw new Error('ไม่พบรายการค่าใช้จ่าย');
+    const date = assertDate(e.date) || (cur ? cur.date : today());
+    const amt = has('amount') ? num(e.amount, NaN) : (cur ? cur.amount : NaN);
+    if (!Number.isFinite(amt) || !(amt > 0)) throw new Error('จำนวนเงินต้องมากกว่า 0');
+    const category = (has('category') ? str(e.category) : (cur ? cur.category : '')) || 'อื่นๆ';
+    const note = has('note') ? str(e.note) : (cur ? str(cur.note) : '');
+    const now = nowIso();
+    let result;
+    if (!cur) {
+      result = { id: adapter.newId(), date, ym: ymOf(date), category, amount: round2(amt), note, deleted: false, created_at: now, updated_at: now };
+      expenses.set(result.id, result);
+      send([{ op: 'set', path: 'expenses/' + result.id, data: result }]);
+    } else {
+      const patch = { date, ym: ymOf(date), category, amount: round2(amt), note, deleted: false, updated_at: now };
+      result = Object.assign({}, cur, patch);
+      expenses.set(id, result);
+      send([{ op: 'merge', path: 'expenses/' + id, data: patch }]);
+    }
+    changed(true);
+    return result;
+  }
+  async function deleteExpense(id) {
+    const cur = expenses.get(id);
+    if (!cur) throw new Error('ไม่พบรายการค่าใช้จ่าย');
+    const patch = { deleted: true, updated_at: nowIso() };
+    const next = Object.assign({}, cur, patch);
+    expenses.set(id, next);
+    send([{ op: 'merge', path: 'expenses/' + id, data: patch }]);
+    changed(true);
+    return next;
+  }
+  async function loadExpenses(ym) {
+    const docs = await adapter.get({ col: 'expenses', where: ['ym', '==', ym] });
+    let ch = false;
+    docs.forEach(d => { if (upsert('expenses', d)) ch = true; });
+    if (ch) changed(false);
+    const out = [];
+    expenses.forEach(e => { if (e.ym === ym && !e.deleted) out.push(e); });
+    return sortExpenses(out);
+  }
+  function expenseCategories() {
+    const out = EXPENSE_CATEGORIES.slice();
+    expenses.forEach(e => { const c = str(e.category); if (c && !e.deleted && out.indexOf(c) < 0) out.push(c); });
+    return out;
+  }
+  function sumExpenses(ym) {
+    let t = 0;
+    expenses.forEach(e => { if (!e.deleted && e.ym === ym) t += Number(e.amount) || 0; });
+    return round2(t);
+  }
+  // derived money fields of an order; docs written before v3.5 lack them -> derive on the fly (never persisted)
+  function money(o) { return o.profit === undefined || o.cost_total === undefined ? deriveOrder(o) : o; }
+
   // ----- history / reports (network) ---------------------------------------
   async function fetchOrdersPage() {
     const q = { col: 'orders', orderBy: ['order_date', 'desc'], limit: PAGE };
@@ -875,7 +1028,10 @@ export function createStore(adapter, opts) {
     const y = String(year);
     const queries = [adapter.get({ col: 'orders', where: ['ym', '>=', y + '-01', '<=', y + '-12'] })];
     for (let m = 1; m <= 12; m++) queries.push(adapter.get({ col: 'orders', where: ['pay_yms', 'array-contains', y + '-' + pad(m, 2)] }));
+    queries.push(adapter.get({ col: 'expenses', where: ['ym', '>=', y + '-01', '<=', y + '-12'] }));
     const results = await Promise.all(queries);
+    const expDocs = results.pop();
+    expDocs.forEach(d => upsert('expenses', d));
     const all = new Map();
     results.forEach(docs => canon(docs).forEach(o => all.set(o.id, o)));
     orders.forEach(o => { if (o.ym && o.ym.slice(0, 4) === y) all.set(o.id, o); else if ((o.pay_yms || []).some(x => x.slice(0, 4) === y)) all.set(o.id, o); });
@@ -897,9 +1053,17 @@ export function createStore(adapter, opts) {
       r.sales += o.total;
       r[normChannel(o.channel)] += o.total;
       r.outstanding += o.total - o.paid_amount;
+      const m = money(o);
+      r.cogs += m.cost_total; r.shipping_cost += m.shipping_cost_eff; r.shipping_fee += m.shipping_fee; r.gross_profit += m.profit; r.cost_missing += m.cost_missing;
+    });
+    expenses.forEach(e => {
+      if (e.deleted || String(e.ym).slice(0, 4) !== y) return;
+      const mi = parseInt(String(e.ym).slice(5, 7), 10);
+      if (mi >= 1 && mi <= 12) months[mi - 1].expenses += Number(e.amount) || 0;
     });
     const total = {};
     REPORT_KEYS.forEach(k => { total[k] = 0; });
+    months.forEach(r => { r.expenses = round2(r.expenses); r.net_profit = round2(r.gross_profit - r.expenses); });
     months.forEach(r => REPORT_KEYS.forEach(k => { r[k] = round2(r[k]); total[k] += r[k]; }));
     REPORT_KEYS.forEach(k => { total[k] = round2(total[k]); });
     return { year: Number(year), months, total };
@@ -916,12 +1080,57 @@ export function createStore(adapter, opts) {
     return promise;
   }
 
+  async function computeDaily(ym) {
+    const [monthDocs, payDocs, expRows] = await Promise.all([
+      adapter.get({ col: 'orders', where: ['ym', '==', ym] }),
+      adapter.get({ col: 'orders', where: ['pay_yms', 'array-contains', ym] }),
+      loadExpenses(ym)
+    ]);
+    const all = new Map();
+    canon(monthDocs).concat(canon(payDocs)).forEach(o => all.set(o.id, o));
+    orders.forEach(o => { if (o.ym === ym || (o.pay_yms || []).indexOf(ym) >= 0) all.set(o.id, o); });
+    const days = new Map();
+    const day = date => {
+      if (!days.has(date)) { const r = { date }; DAY_KEYS.forEach(k => { r[k] = 0; }); days.set(date, r); }
+      return days.get(date);
+    };
+    all.forEach(o => {
+      if (o.status === 'cancelled') return;
+      (o.payments || []).forEach(p => { if (ymOf(p.date) === ym) day(p.date).received += p.amount; });
+      if (o.ym !== ym) return;
+      const r = day(o.order_date);
+      const m = money(o);
+      r.orders++;
+      r.plants += (o.items || []).reduce((s, i) => s + i.qty, 0);
+      r.sales += o.total; r.cogs += m.cost_total; r.shipping_cost += m.shipping_cost_eff; r.gross_profit += m.profit; r.cost_missing += m.cost_missing;
+    });
+    const list = Array.from(days.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const total = {};
+    DAY_KEYS.forEach(k => { total[k] = 0; });
+    list.forEach(r => DAY_KEYS.forEach(k => { r[k] = round2(r[k]); total[k] += r[k]; }));
+    DAY_KEYS.forEach(k => { total[k] = round2(total[k]); });
+    const exp = round2(expRows.reduce((s, e) => s + (Number(e.amount) || 0), 0));
+    return { ym, days: list, total, expenses: exp, expense_rows: expRows, net_profit: round2(total.gross_profit - exp) };
+  }
+  function dailyReport(ym, o2) {
+    ym = String(ym || state.today.slice(0, 7));
+    const key = 'd:' + ym;
+    const refresh = !!(o2 && o2.refresh);
+    const memo = reportMemo.get(key);
+    if (!refresh && memo && memo.ver === localVer) return memo.promise;
+    const ver = localVer;
+    const promise = computeDaily(ym);
+    reportMemo.set(key, { ver, promise });
+    promise.catch(() => { if (reportMemo.get(key) && reportMemo.get(key).promise === promise) reportMemo.delete(key); });
+    return promise;
+  }
+
   function monthStats(ym) {
     const t = state.today;
-    const s = { orders: 0, sales: 0, received: 0, outstanding_all: 0, outstanding_count: 0, to_ship: 0, ship_today: 0, overdue: 0 };
+    const s = { orders: 0, sales: 0, received: 0, outstanding_all: 0, outstanding_count: 0, to_ship: 0, ship_today: 0, overdue: 0, gross_profit: 0, cost_missing: 0, expenses: 0, net_profit: 0 };
     orders.forEach(o => {
       if (o.status === 'cancelled') return;
-      if (o.ym === ym) { s.orders++; s.sales += o.total; }
+      if (o.ym === ym) { s.orders++; s.sales += o.total; const m = money(o); s.gross_profit += m.profit; s.cost_missing += m.cost_missing; }
       (o.payments || []).forEach(p => { if (ymOf(p.date) === ym) s.received += p.amount; });
       if (o.payment_status !== 'paid') { s.outstanding_all += o.total - o.paid_amount; s.outstanding_count++; }
       if (o.ship_status === 'pending') {
@@ -930,16 +1139,17 @@ export function createStore(adapter, opts) {
         else if (o.ship_date && o.ship_date < t) s.overdue++;
       }
     });
+    s.gross_profit = round2(s.gross_profit); s.expenses = sumExpenses(ym); s.net_profit = round2(s.gross_profit - s.expenses);
     s.sales = round2(s.sales); s.received = round2(s.received); s.outstanding_all = round2(s.outstanding_all);
     return s;
   }
 
   async function exportAll() {
-    const [pl, cu, or, st, co] = await Promise.all([
+    const [pl, cu, or, st, co, ex] = await Promise.all([
       adapter.get({ col: 'plants' }), adapter.get({ col: 'customers' }), adapter.get({ col: 'orders' }),
-      adapter.getDoc('settings/main'), adapter.getDoc('meta/counters')
+      adapter.getDoc('settings/main'), adapter.getDoc('meta/counters'), adapter.get({ col: 'expenses' })
     ]);
-    return { exported_at: nowIso(), settings: st || {}, counters: co || {}, plants: pl, customers: cu, orders: or };
+    return { exported_at: nowIso(), settings: st || {}, counters: co || {}, plants: pl, customers: cu, orders: or, expenses: ex };
   }
 
   // ----- legacy import (rows in the OLD sheet format) -----------------------
@@ -1069,11 +1279,11 @@ export function createStore(adapter, opts) {
     const overwrite = opts2.overwrite === true;
     const ex = opts2.existing || {};
     const ids = list => { const set = new Set(); (list || []).forEach(d => { if (d && d.id) set.add(d.id); }); return set; };
-    const exPlants = ids(ex.plants), exCust = ids(ex.customers), exOrders = ids(ex.orders);
+    const exPlants = ids(ex.plants), exCust = ids(ex.customers), exOrders = ids(ex.orders), exExp = ids(ex.expenses);
     // anything already in memory is also "present"
-    plants.forEach((_, id) => exPlants.add(id)); customers.forEach((_, id) => exCust.add(id)); orders.forEach((_, id) => exOrders.add(id));
+    plants.forEach((_, id) => exPlants.add(id)); customers.forEach((_, id) => exCust.add(id)); orders.forEach((_, id) => exOrders.add(id)); expenses.forEach((_, id) => exExp.add(id));
     const ops = [];
-    const out = { plants: 0, customers: 0, orders: 0, skipped: 0, settings: false };
+    const out = { plants: 0, customers: 0, orders: 0, expenses: 0, skipped: 0, settings: false };
     const pick = (list, present, fn) => {
       (list || []).forEach(d => {
         if (!d || typeof d !== 'object' || !str(d.id)) return;
@@ -1103,6 +1313,12 @@ export function createStore(adapter, opts) {
       orders.set(doc.id, doc);
       ops.push({ op: 'set', path: 'orders/' + doc.id, data: doc });
       out.orders++;
+    });
+    pick(Array.isArray(data.expenses) ? data.expenses : [], exExp, d => {
+      const doc = Object.assign({}, d);
+      expenses.set(doc.id, doc);
+      ops.push({ op: 'set', path: 'expenses/' + doc.id, data: doc });
+      out.expenses++;
     });
     if (overwrite && data.settings && typeof data.settings === 'object') {
       const sp = {};
@@ -1156,7 +1372,7 @@ export function createStore(adapter, opts) {
       let ch = false;
       (snap.docs || []).forEach(d => { if (upsert(col, d)) ch = true; });
       (snap.removed || []).forEach(id => {
-        const map = col === 'plants' ? plants : (col === 'customers' ? customers : orders);
+        const map = mapOf(col);
         const local = map.get(id);
         if (local && !matches(local)) return; // our own change explains the removal
         adapter.getDoc(col + '/' + id).then(d => {
@@ -1174,12 +1390,13 @@ export function createStore(adapter, opts) {
     currentYm = state.today.slice(0, 7);
     const ym = currentYm;
     monthUnsubs.push(listen('month', 'orders', { col: 'orders', where: ['ym', '==', ym] }, o => o.ym === ym));
+    monthUnsubs.push(listen('expMonth', 'expenses', { col: 'expenses', where: ['ym', '==', ym] }, e => e.ym === ym));
     monthUnsubs.push(listen('payMonth', 'orders', { col: 'orders', where: ['pay_yms', 'array-contains', ym] }, o => (o.pay_yms || []).indexOf(ym) >= 0));
   }
   function detachMonth() {
     monthUnsubs.forEach(u => { try { u(); } catch (e) { /* ignore */ } });
     monthUnsubs = [];
-    delete pendingFlags.month; delete pendingFlags.payMonth;
+    delete pendingFlags.month; delete pendingFlags.payMonth; delete pendingFlags.expMonth;
   }
   function checkRollover() {
     const t = today();
@@ -1252,10 +1469,11 @@ export function createStore(adapter, opts) {
 
   return {
     start, stop, subscribe, state, onError, checkRollover,
-    onLocalChange, getPlant, getCustomer, getOrder, balance,
+    onLocalChange, getPlant, getCustomer, getOrder, getExpense: id => expenses.get(id) || null, balance,
     saveSettings, savePlant, deletePlant, getPlantPhoto, getPlantPhotoDoc, purgeOldPhotos, loadSoldPlants, saveCustomer, deleteCustomer,
     createOrder, createOrdersBatch, updateOrder, updateOrderItems, recordPayment, deletePayment,
     markShipped, unmarkShipped, cancelOrder,
-    loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, monthStats, exportAll, importLegacy, restoreBackup
+    updateOrderCosts, saveExpense, deleteExpense, loadExpenses, expenseCategories,
+    loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, dailyReport, monthStats, exportAll, importLegacy, restoreBackup
   };
 }
