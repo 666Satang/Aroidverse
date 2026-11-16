@@ -1,5 +1,5 @@
 // Item picker, new-order form (incl. quick walk-in sale), item editor, photo import.
-import { ctx, $, esc, num, str, sum, debounce, money, icon, chIcon, thumbHTML, toast, openSheet, dialog, bind, CH, WALKIN_NAME, errMsg, busy, today, findOrder, fmtDate, sortBarHTML, getPickSort, setPickSort, sortPlants, soldHint } from './ui-core.js';
+import { ctx, $, esc, num, str, sum, debounce, money, icon, chIcon, thumbHTML, toast, openSheet, dialog, bind, CH, WALKIN_NAME, errMsg, busy, today, findOrder, fmtDate, sortBarHTML, getPickSort, setPickSort, sortPlants, soldHint, timeFieldHTML, validTime, numOrNull, hasNum } from './ui-core.js';
 
 // ---------------------------------------------------------------- item picker
 // f = {items:[{plant_id,code,name,unit_price,qty,max?,custom?}], bonus:{plantId:qty already in this order}}
@@ -57,13 +57,14 @@ export function itemsPicker(host, f, onChange) {
   return { redraw() { drawLines(); drawRes(); } };
 }
 
-const payloadItems = (f) => f.items.map((i) => ({ plant_id: i.plant_id, name: str(i.name).trim(), unit_price: num(i.unit_price), qty: i.qty }));
+// unit_cost is sent only when the owner touched it in the new-order cost section (otherwise the store snapshots plant.cost / keeps the old one)
+const payloadItems = (f) => f.items.map((i) => { const o = { plant_id: i.plant_id, name: str(i.name).trim(), unit_price: num(i.unit_price), qty: i.qty }; if (i.cost_set) o.unit_cost = numOrNull(i.unit_cost); return o; });
 
 // ---------------------------------------------------------------- new order
 export function openOrderForm(opt) {
   opt = opt || {};
   const quick = !!opt.quick, S = ctx.store, st = S.state;
-  const f = { chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', phone: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
+  const f = { costOpen: false, shipCost: '', chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', phone: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
   const cu0 = f.cid && S.getCustomer(f.cid); if (cu0 && CH[cu0.channel]) f.channel = cu0.channel;
   const seg = (id) => '<div class="seg" id="' + id + '"></div>';
 
@@ -84,7 +85,9 @@ export function openOrderForm(opt) {
           '<div class="card"><div class="h3">ช่องทาง</div>' + seg('f-ch') + '<label class="switch" id="f-wiw" style="margin-top:10px" hidden><input type="checkbox" id="f-wi" checked> ลูกค้ารับของแล้ว</label></div>' +
           '<div class="card"><div class="h3">รายการสินค้า</div><div id="f-items"></div></div>' +
           '<div class="card"><div class="grid2"><div><label class="fld">ค่าส่ง</label><input id="f-fee" type="number" inputmode="decimal" placeholder="0"></div><div><label class="fld">ส่วนลด</label><input id="f-disc" type="number" inputmode="decimal" placeholder="0"></div>' +
-          '<div><label class="fld">วันที่สั่ง</label><input id="f-od" type="date" value="' + esc(st.today) + '"></div><div id="f-sdw"><label class="fld">กำหนดส่ง</label><input id="f-sd" type="date"></div></div></div>' +
+          '<div><label class="fld">วันที่สั่ง</label><input id="f-od" type="date" value="' + esc(st.today) + '"></div><div id="f-sdw"><label class="fld">กำหนดส่ง</label><input id="f-sd" type="date"></div>' +
+          '<div id="f-stw" style="grid-column:1/-1"><label class="fld">เวลาส่ง (ไม่บังคับ)</label>' + timeFieldHTML('f-st', '', 'เวลาส่ง') + '</div><div id="f-sth" class="sub" style="grid-column:1/-1;margin-top:-6px">ใส่เวลา = แอปเตือนก่อนถึงเวลาส่ง</div></div></div>' +
+          '<div class="card" id="f-costc"><button class="row costtog" data-act="costtog" aria-expanded="false" style="width:100%;min-height:44px;font-weight:600;color:var(--sage-d)">' + icon('lock') + '<span class="grow" style="text-align:left">ต้นทุนและค่าส่งจริง (ไม่บังคับ)</span>' + icon('chev', 'chev') + '</button><div id="f-cost" hidden></div></div>' +
           '<div class="card"><div class="h3">รับเงิน</div><input id="f-paid" type="number" inputmode="decimal" placeholder="0" aria-label="รับเงินแล้ว (บาท)">' + '<div class="seg" id="f-pt" style="margin-top:10px"></div>' +
           '<div class="grid3" style="margin-top:10px"><button class="btn sec sm" data-act="paid0">ยังไม่จ่าย</button><button class="btn sec sm" data-act="paidhalf">มัดจำ 50%</button><button class="btn sec sm" data-act="paidfull">จ่ายครบ</button></div></div>' +
           '<div class="card"><label class="fld">หมายเหตุ</label><textarea id="f-note" style="min-height:70px"></textarea></div>' +
@@ -121,13 +124,23 @@ export function openOrderForm(opt) {
         const btn = $('#f-save', s.foot); btn.textContent = (quick ? 'ขายเลย' : 'บันทึกออเดอร์') + ' · ' + money(tot);
         return tot;
       }
-      picker = itemsPicker(g('f-items'), f, () => { calc(); if (!quick) drawSugg(); });
+      picker = itemsPicker(g('f-items'), f, () => { calc(); if (!quick) { drawSugg(); if (f.costOpen) drawCosts(); } });
 
+      const drawCosts = () => {
+        const box = g('f-cost'); if (!box) return;
+        box.hidden = !f.costOpen; g('f-costc').classList.toggle('open', f.costOpen);
+        const tg = B.querySelector('.costtog'); if (tg) tg.setAttribute('aria-expanded', f.costOpen ? 'true' : 'false');
+        if (!f.costOpen) return;
+        const costOf = (it) => { if (it.cost_set) return hasNum(it.unit_cost) ? it.unit_cost : ''; const p = it.plant_id && S.getPlant(it.plant_id); return p && hasNum(p.cost) ? p.cost : ''; };
+        box.innerHTML = '<div class="sub" style="margin:12px 2px 4px">ต้นทุนต่อหน่วย (บาท) — ดึงจากต้นทุนของต้นไม้ ว่างไว้ = ยังไม่ทราบ</div>' +
+          (f.items.length ? f.items.map((it, i) => '<div class="costrow"><div class="grow"><div class="nm trunc">' + esc(it.name || 'รายการ ' + (i + 1)) + '</div><div class="sub">ขาย ' + money(it.unit_price) + ' × ' + it.qty + '</div></div><input type="number" inputmode="decimal" data-uc="' + i + '" value="' + esc(costOf(it)) + '" placeholder="ยังไม่ทราบ" aria-label="ต้นทุนต่อหน่วย"></div>').join('') : '<div class="sub" style="padding:10px 2px">เพิ่มรายการสินค้าก่อน</div>') +
+          '<label class="fld">ค่าส่งที่ร้านจ่ายจริง (บาท)</label><input id="f-shipc" type="number" inputmode="decimal" placeholder="เท่ากับค่าส่งที่เก็บลูกค้า" value="' + esc(f.shipCost) + '"><p class="sub" style="margin-top:8px">เว้นว่าง = เท่ากับค่าส่งที่เก็บลูกค้า · ส่งฟรีให้ใส่ค่าส่งที่จ่ายจริง</p>';
+      };
       if (!quick) {
         const drawSeg = () => {
           g('f-cm').innerHTML = [['existing', 'ลูกค้าเดิม'], ['new', 'ลูกค้าใหม่']].map((m) => '<button data-act="cm" data-m="' + m[0] + '" class="' + (f.mode === m[0] ? 'on' : '') + '">' + m[1] + '</button>').join('');
           g('f-ch').innerHTML = Object.keys(CH).map((k) => '<button data-act="ch" data-k="' + k + '" class="' + (f.channel === k ? 'on' : '') + '">' + CH[k] + '</button>').join('');
-          g('f-wiw').hidden = !walkin(); g('f-sdw').hidden = walkin() && f.shipped;
+          g('f-wiw').hidden = !walkin(); const hs = walkin() && f.shipped; g('f-sdw').hidden = hs; g('f-stw').hidden = hs; g('f-sth').hidden = hs;
         };
         const drawCust = () => {
           const c = g('f-cust');
@@ -158,7 +171,8 @@ export function openOrderForm(opt) {
           ch: (d) => { f.channel = d.k; drawSeg(); if (f.mode === 'existing' && !f.cid) drawCust(); },
           chg: () => { f.cid = ''; f.cq = ''; drawCust(); },
           pickc: (d) => { f.cid = d.id; const cu = S.getCustomer(d.id); if (cu && CH[cu.channel]) f.channel = cu.channel; drawSeg(); drawCust(); },
-          addp: (d) => { const p = S.getPlant(d.id); if (p) { f.items.push({ plant_id: p.id, code: p.code, name: p.name, unit_price: num(p.price), qty: 1, max: num(p.qty) }); picker.redraw(); calc(); drawSugg(); } },
+          addp: (d) => { const p = S.getPlant(d.id); if (p) { f.items.push({ plant_id: p.id, code: p.code, name: p.name, unit_price: num(p.price), qty: 1, max: num(p.qty) }); picker.redraw(); calc(); drawSugg(); if (f.costOpen) drawCosts(); } },
+          costtog: () => { f.costOpen = !f.costOpen; drawCosts(); },
           paid0: () => { f.pm = 'none'; f.ptm = false; calc(); },
           paidhalf: () => { f.pm = 'half'; f.pt = 'deposit'; f.ptm = true; calc(); },
           paidfull: () => { f.pm = 'full'; f.ptm = false; calc(); },
@@ -171,6 +185,8 @@ export function openOrderForm(opt) {
           else if (t.dataset.nc) f.nc[t.dataset.nc] = t.value;
           else if (t.id === 'f-paid') { f.pm = 'custom'; calc(); }
           else if (t.id === 'f-fee' || t.id === 'f-disc') calc();
+          else if (t.dataset.uc !== undefined) { const it = f.items[+t.dataset.uc]; if (it) { it.cost_set = true; it.unit_cost = numOrNull(t.value); } }
+          else if (t.id === 'f-shipc') f.shipCost = t.value;
         });
         B.addEventListener('change', (e) => { if (e.target.id === 'f-wi') { f.shipped = e.target.checked; drawSeg(); } });
         drawSeg(); drawCust();
@@ -202,10 +218,12 @@ export function openOrderForm(opt) {
         const note = quick ? '' : [g('f-note').value.trim(), f.chat.trim() ? '[แชท]\n' + f.chat.trim() : ''].filter(Boolean).join('\n\n');
         const shipped = quick || (walkin() && f.shipped);
         const payload = {
-          customer_id: cid, new_customer: newC, channel: f.channel, order_date: quick ? st.today : (g('f-od').value || st.today), ship_date: shipped || quick ? '' : g('f-sd').value,
+          customer_id: cid, new_customer: newC, channel: f.channel, order_date: quick ? st.today : (g('f-od').value || st.today), ship_date: shipped || quick ? '' : g('f-sd').value, ship_time: shipped || quick ? '' : validTime(g('f-st').value),
           items, shipping_fee: quick ? 0 : num(g('f-fee').value), discount: num(g('f-disc').value), paid_amount: paid, paid_type: effType(paid, tot) || (quick ? 'payment' : 'payment'), note,
         };
         if (quick) payload.paid_type = 'payment';
+        else payload.shipping_cost = numOrNull(f.shipCost);
+        if (!payload.ship_date) payload.ship_time = '';
         if (shipped) payload.already_shipped = true;
         S.createOrder(payload).then((o) => {
           s.close();

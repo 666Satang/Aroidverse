@@ -1,5 +1,5 @@
 // Orders tab, order detail sheet, payment / ship / edit dialogs, invoice preview.
-import { ctx, $, esc, num, str, money, fmtDate, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy, closeAllSheets } from './ui-core.js';
+import { ctx, $, esc, num, str, money, fmtDate, fmtShip, shipKey, validTime, timeFieldHTML, costInfo, hasNum, numOrNull, negCls, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy, closeAllSheets } from './ui-core.js';
 import * as PR from './printer.js';
 
 export const FLT = {
@@ -26,7 +26,7 @@ export function orderCard(o) {
     const parts = [];
     if (bal > 0.005) parts.push('ค้าง ' + money(bal));
     else if (bal < -0.005) parts.push('คืน ' + money(-bal));
-    if (o.ship_status === 'pending' && str(o.ship_date)) parts.push('ส่ง ' + fmtDate(o.ship_date, true));
+    if (o.ship_status === 'pending' && str(o.ship_date)) parts.push('ส่ง ' + fmtShip(o, true));
     due = parts.join(' · ');
   }
   return '<button class="ocard' + (act ? '' : ' dim') + '" data-act="order" data-id="' + esc(o.id) + '">' +
@@ -57,7 +57,8 @@ export const ordersView = {
     $('#ochips', el).innerHTML = (EXTRA[ui.of] ? '<button class="chip on" data-act="of" data-f="all">' + esc(EXTRA[ui.of]) + ' ' + icon('close').replace('class="i"', 'class="i" style="width:14px;height:14px"') + '</button>' : '') +
       BASE.map((c) => '<button class="chip' + (ui.of === c[0] ? ' on' : '') + '" data-act="of" data-f="' + c[0] + '">' + c[1] + '</button>').join('');
     const fl = FLT[ui.of] || FLT.all;
-    const l = st.orders.filter(fl).filter((o) => !q || (str(o.customer_name) + ' ' + str(o.invoice_no) + ' ' + str(o.items_summary) + ' ' + str(o.code)).toLowerCase().includes(q));
+    let l = st.orders.filter(fl).filter((o) => !q || (str(o.customer_name) + ' ' + str(o.invoice_no) + ' ' + str(o.items_summary) + ' ' + str(o.code)).toLowerCase().includes(q));
+    if (ui.of === 'today') l = l.slice().sort((a, b) => (shipKey(a) < shipKey(b) ? -1 : shipKey(a) > shipKey(b) ? 1 : 0));
     let h = '';
     if (!l.length) {
       h = !st.orders.length ? emptyHTML('🌱', 'ยังไม่มีออเดอร์', 'กดปุ่ม + ด้านล่างได้เลย หรือสร้างออเดอร์แรกตรงนี้', 'ออเดอร์ใหม่', 'new')
@@ -78,6 +79,7 @@ export function openOrder(id) {
   const S = ctx.store;
   if (!findOrder(id)) return;
   warmPrinter();
+  let costOpen = false; // collapsed by default so costs are not visible when the phone is shown to a customer
   openSheet({
     title: 'ออเดอร์', live: true,
     build(s) {
@@ -93,7 +95,7 @@ export function openOrder(id) {
       }).join('');
       let ship = '';
       if (o.ship_status === 'shipped') ship = '<div class="kv"><span>ส่งแล้วเมื่อ</span><b>' + esc(fmtDate(o.shipped_date)) + '</b></div>' + (o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '');
-      else ship = '<div class="kv"><span>กำหนดส่ง</span><b class="' + (isOver(o) ? 'red' : '') + '">' + (o.ship_date ? esc(fmtDate(o.ship_date)) : 'ยังไม่กำหนด') + '</b></div>' + (o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '');
+      else ship = '<div class="kv"><span>กำหนดส่ง</span><b class="' + (isOver(o) ? 'red' : '') + '">' + (o.ship_date ? esc(fmtShip(o)) : 'ยังไม่กำหนด') + '</b></div>' + (o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '');
       s.body.innerHTML =
         '<div class="card"><div class="row"><span class="ava ' + esc(o.channel) + '">' + chIcon(o.channel) + '</span><div class="grow"><div class="nm" style="font-weight:700;font-size:18px;line-height:1.35">' + esc(o.customer_name) + '</div><div class="sub">' + esc(CH[o.channel] || '') + ' · สั่งเมื่อ ' + esc(fmtDate(o.order_date)) + '</div></div></div>' +
         '<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:6px">' + orderPills(o) + '</div>' +
@@ -110,6 +112,7 @@ export function openOrder(id) {
         '<div class="kv hl"><span>' + (over ? 'ต้องคืนเงิน' : 'ค้างชำระ') + '</span><span class="' + (over ? 'red' : bal > 0.005 ? '' : 'green') + '">' + money(Math.abs(bal) < 0.005 ? 0 : Math.abs(bal)) + '</span></div></div>' +
         '<div class="card"><div class="h3">การจัดส่ง</div>' + ship + '</div>' +
         (o.note ? '<div class="card"><div class="h3">หมายเหตุ</div><div class="note-box">' + esc(o.note) + '</div></div>' : '') +
+        (act ? costCardHTML(o, costOpen) : '') +
         (act && quickPrintOn() ? '<button class="btn block qprint" id="qprint" data-act="qprint">' + icon('print') + '<span>พิมพ์ใบปะหน้า</span></button>' : '') +
         (act ? '<div class="menu-list">' +
           '<button class="mrow" data-act="edit"><span class="ic sky">' + icon('edit') + '</span><span class="t">แก้ไขข้อมูลออเดอร์</span>' + icon('chev', 'chev') + '</button>' +
@@ -124,6 +127,8 @@ export function openOrder(id) {
       if (!s.bound) {
         s.bound = true;
         const h = {
+          costs: () => { costOpen = !costOpen; s.render(); },
+          editcost: () => openCostSheet(id),
           pay: () => payDlg(id), ship: () => shipDlg(id), edit: () => editDlg(id),
           items: () => import('./ui-form.js').then((m) => m.openItemsEditor(id)),
           inv: () => openInvoice(id),
@@ -170,11 +175,53 @@ function shipDlg(id) {
 function editDlg(id) {
   const o = findOrder(id);
   dialog('แก้ไขออเดอร์', '<div class="grid2"><div><label class="fld">วันที่สั่ง</label><input type="date" id="e-od" value="' + esc(o.order_date) + '"></div><div><label class="fld">กำหนดส่ง</label><input type="date" id="e-sd" value="' + esc(o.ship_date) + '"></div>' +
+    '<div style="grid-column:1/-1"><label class="fld">เวลาส่ง (ไม่บังคับ)</label>' + timeFieldHTML('e-st', o.ship_time, 'เวลาส่ง') + '</div><div style="grid-column:1/-1"><label class="fld">เลขพัสดุ</label><input id="e-trk" value="' + esc(o.tracking_no) + '"></div>' +
     '<div><label class="fld">ค่าส่ง</label><input type="number" inputmode="decimal" id="e-fee" value="' + num(o.shipping_fee) + '"></div><div><label class="fld">ส่วนลด</label><input type="number" inputmode="decimal" id="e-disc" value="' + num(o.discount) + '"></div></div>' +
-    '<label class="fld">เลขพัสดุ</label><input id="e-trk" value="' + esc(o.tracking_no) + '"><label class="fld">หมายเหตุ</label><textarea id="e-note">' + esc(o.note) + '</textarea>', 'บันทึก', (d) => {
-      const q = (i) => $(i, d.el).value;
-      return ctx.store.updateOrder(id, { order_date: q('#e-od') || o.order_date, ship_date: q('#e-sd'), shipping_fee: num(q('#e-fee')), discount: num(q('#e-disc')), tracking_no: q('#e-trk').trim(), note: q('#e-note').trim() }).then(() => toast('บันทึกแล้ว'));
+    '<label class="fld">หมายเหตุ</label><textarea id="e-note">' + esc(o.note) + '</textarea>', 'บันทึก', (d) => {
+      const q = (i) => $(i, d.el).value, sd = q('#e-sd');
+      return ctx.store.updateOrder(id, { order_date: q('#e-od') || o.order_date, ship_date: sd, ship_time: sd ? validTime(q('#e-st')) : '', shipping_fee: num(q('#e-fee')), discount: num(q('#e-disc')), tracking_no: q('#e-trk').trim(), note: q('#e-note').trim() }).then(() => toast('บันทึกแล้ว'));
     });
+}
+
+// ---------------------------------------------------------------- cost & profit (SPEC8) — private: never on invoice / label
+function costCardHTML(o, open) {
+  const head = '<button class="costhead" data-act="costs" aria-expanded="' + (open ? 'true' : 'false') + '"><span class="ic">' + icon(open ? 'eye' : 'lock') + '</span><span class="grow"><span class="t">ต้นทุนและกำไร</span><span class="sub">' + (open ? 'แตะเพื่อซ่อน' : 'แตะเพื่อดู (ซ่อนไว้เผื่อโชว์หน้าจอให้ลูกค้า)') + '</span></span>' + icon('chev', 'chev' + (open ? ' up' : '')) + '</button>';
+  if (!open) return '<div class="card costcard">' + head + '</div>';
+  const c = costInfo(o), items = o.items || [];
+  const rows = items.map((i) => '<div class="kv"><span>' + esc(i.name) + '<br><span class="sub">' + num(i.qty) + ' × ' + (hasNum(i.unit_cost) ? money(i.unit_cost) : 'ยังไม่ได้ใส่ต้นทุน') + '</span></span><b class="' + (hasNum(i.unit_cost) ? '' : 'faint') + '">' + (hasNum(i.unit_cost) ? money(Number(i.unit_cost) * num(i.qty)) : '–') + '</b></div>').join('');
+  return '<div class="card costcard open">' + head + '<div class="hr"></div>' + rows +
+    '<div class="kv mut"><span>ค่าส่งที่ร้านจ่ายจริง' + (c.shipReal == null ? '<br><span class="sub">เท่ากับค่าส่งที่เก็บลูกค้า</span>' : '') + '</span><span>' + money(c.shipEff) + '</span></div>' +
+    '<div class="kv mut"><span>ต้นทุนรวม (ต้นไม้ + ค่าส่ง)</span><span>' + money(c.costTotal + c.shipEff) + '</span></div>' +
+    '<div class="kv hl"><span>กำไร</span><span class="' + (c.profit < -0.004 ? 'red' : 'green') + '">' + money(c.profit) + '</span></div>' +
+    (c.missing > 0 ? '<div class="miss">' + icon('alert') + '<span>ยังไม่ได้ใส่ต้นทุน ' + c.missing + ' รายการ — กำไรอาจสูงเกินจริง</span></div>' : '') +
+    '<button class="btn sec block" data-act="editcost" style="margin-top:12px">' + icon('edit') + ' แก้ไขต้นทุน</button></div>';
+}
+export function openCostSheet(id) {
+  const o0 = findOrder(id); if (!o0) return;
+  const items = o0.items || [];
+  openSheet({
+    title: 'แก้ไขต้นทุน', sticky: true,
+    build(s) {
+      s.body.innerHTML = '<div class="card"><div class="h3">ต้นทุนต่อหน่วย (บาท)</div>' + items.map((i, ix) =>
+        '<div class="line"><div class="row"><div class="grow"><div class="nm">' + esc(i.name) + '</div><div class="sub">ขาย ' + money(i.unit_price) + ' × ' + num(i.qty) + '</div></div></div>' +
+        '<input type="number" inputmode="decimal" data-uc="' + ix + '" value="' + (hasNum(i.unit_cost) ? esc(i.unit_cost) : '') + '" placeholder="ยังไม่ทราบ" aria-label="ต้นทุนต่อหน่วย ' + esc(i.name) + '" style="margin-top:10px"></div>').join('') + '</div>' +
+        '<div class="card"><label class="fld">ค่าส่งที่ร้านจ่ายจริง (บาท)</label><input type="number" inputmode="decimal" id="c-ship" value="' + (hasNum(o0.shipping_cost) ? esc(o0.shipping_cost) : '') + '" placeholder="เท่ากับค่าส่งที่เก็บลูกค้า (' + money(o0.shipping_fee) + ')">' +
+        '<p class="sub" style="margin-top:8px">เว้นว่าง = เท่ากับค่าส่งที่เก็บลูกค้า · ส่งฟรีให้ใส่ค่าส่งที่จ่ายจริง</p></div>' +
+        '<div class="card"><div class="kv mut"><span>ต้นทุนต้นไม้รวม</span><span id="c-ct"></span></div><div class="kv hl"><span>กำไร</span><span id="c-pf"></span></div></div>';
+      s.foot.innerHTML = '<button class="btn block" id="c-save">บันทึกต้นทุน</button>';
+      const calc = () => {
+        let ct = 0;
+        items.forEach((i, ix) => { const v = numOrNull($('[data-uc="' + ix + '"]', s.body).value); if (v != null) ct += v * num(i.qty); });
+        const sv = numOrNull($('#c-ship', s.body).value), se = sv == null ? num(o0.shipping_fee) : sv, pf = Math.round((num(o0.total) - ct - se) * 100) / 100;
+        $('#c-ct', s.body).textContent = money(ct); const p = $('#c-pf', s.body); p.textContent = money(pf); p.className = pf < 0 ? 'red' : 'green';
+      };
+      s.body.addEventListener('input', calc); calc();
+      $('#c-save', s.foot).onclick = () => {
+        const patch = { items: items.map((i, ix) => ({ index: ix, unit_cost: numOrNull($('[data-uc="' + ix + '"]', s.body).value) })), shipping_cost: numOrNull($('#c-ship', s.body).value) };
+        ctx.store.updateOrderCosts(id, patch).then(() => { s.close(); toast('บันทึกต้นทุนแล้ว'); }, (e) => toast(errMsg(e), true));
+      };
+    },
+  });
 }
 
 // ---------------------------------------------------------------- invoice
