@@ -1,5 +1,6 @@
 // Menu tab, reports (CSV + print), settings, backup.
 import { ctx, $, esc, num, str, sum, money, fmtN, fmtDate, MON, MONTHS, icon, toast, openSheet, dialog, confirmDlg, bind, errMsg, busy, emptyHTML, hasNum, shareOrDownload, downloadBlob, closeAllSheets } from './ui-core.js';
+import { placesCardHTML, mountPlacesCard } from './ui-delivery.js';
 import { orderCard, openOrder, copyPrinterLog, printError, printerStatusText } from './ui-orders.js';
 import * as PR from './printer.js';
 
@@ -219,6 +220,7 @@ export const settingsView = {
   mount(el) {
     const st = ctx.store.state.settings || {};
     el.innerHTML = FIELDS.map((g) => '<div class="card"><div class="h3">' + g[0] + '</div>' + g[1].map((f) => '<label class="fld">' + f[1] + '</label>' + (f[0] === 'invoice_note' ? '<textarea data-k="' + f[0] + '" style="min-height:70px">' + esc(st[f[0]]) + '</textarea>' : '<input data-k="' + f[0] + '" value="' + esc(st[f[0]]) + '" autocomplete="off">')).join('') + '</div>').join('') +
+      placesCardHTML() +
       '<div class="card"><div class="h3">อ่านรูปจดขายด้วย Gemini</div><label class="fld">Gemini API key</label><div class="pwrap"><input data-k="gemini_api_key" id="s-gkey" type="password" value="' + esc(st.gemini_api_key) + '" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="peek" id="s-gshow" type="button">แสดง</button></div>' +
       '<label class="fld">โมเดล</label><input data-k="gemini_model" value="' + esc(st.gemini_model) + '" autocomplete="off" autocapitalize="off">' +
       '<p class="sub" style="margin-top:12px">1. เปิด aistudio.google.com/apikey ด้วยบัญชี Google<br>2. กด Create API key<br>3. คัดลอกมาวางที่ช่องด้านบน แล้วกดบันทึก<br>ใช้ฟรี รูปจะถูกส่งไปให้ Google อ่านเฉพาะตอนกดนำเข้าเท่านั้น</p></div>' +
@@ -230,11 +232,12 @@ export const settingsView = {
       Object.assign(o, readBridge(el), readLabel(el), readPrinter(el));
       ctx.store.saveSettings(o).then(() => { toast('บันทึกการตั้งค่าแล้ว'); ctx.nav.menu(null); }, (e) => toast(errMsg(e), true));
     };
+    el._plDraw = mountPlacesCard(el);
     initBridge(el);
     initPush(el);
     initLabel(el);
   },
-  update() {},
+  update(el) { if (el && el._plDraw) el._plDraw(); },
 };
 
 // ---------------------------------------------------------------- bridge (Google Sheet + Calendar), legacy import, photo purge

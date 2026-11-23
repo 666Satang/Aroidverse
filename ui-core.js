@@ -1,8 +1,10 @@
 // Shared UI helpers: context, formatting, icons, toast, sheets, dialogs, file helpers.
 
+import * as SM from './store.js';
+
 export const ctx = {
   store: null, adapter: null, demo: false, bridge: null,
-  ui: { of: 'all', oq: '', limO: 60, pq: '', sold: false, limP: 60, cq: '', cch: 'all', limC: 60, menu: null },
+  ui: { of: 'all', om: 'all', oq: '', limO: 60, pq: '', sold: false, limP: 60, cq: '', cch: 'all', limC: 60, menu: null },
   nav: { tab: () => {}, menu: () => {}, orders: () => {}, rerender: () => {} },
 };
 export const $ = (s, r) => (r || document).querySelector(s);
@@ -114,6 +116,10 @@ const P = {
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/>',
   lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="3"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
   paste: '<rect x="6" y="5" width="12" height="15" rx="2.5"/><path d="M9.5 5V4h5v1M9.5 11h5M9.5 14.5h3"/>',
+  mail: '<rect x="3.5" y="6" width="17" height="12" rx="3"/><path d="m4.5 8.2 7.5 5.3 7.5-5.3"/>',
+  bike: '<circle cx="6" cy="16.5" r="3"/><circle cx="18" cy="16.5" r="3"/><path d="M6 16.5 9.2 9.5H13l2.8 7M12 9.5 10.6 6.2H8.4M13.2 9.5H16"/>',
+  up: '<path d="m6 14.5 6-6 6 6"/>',
+  down: '<path d="m6 9.5 6 6 6-6"/>',
 };
 export function icon(name, cls) { return '<svg class="i' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (P[name] || '') + '</svg>'; }
 export const chIcon = (c) => icon({ facebook: 'fb', instagram: 'insta', walkin: 'store' }[c] || 'dots');
@@ -196,6 +202,33 @@ export function bind(root, handlers) {
   });
 }
 
+// ---------- status tones (SPEC9 §3): done / open / urgent / cancelled + shipping urgency ----------
+const dayNum = (d) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str(d)); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 864e5 : NaN; };
+export function urgencyOf(o) {
+  const t = ctx.store ? ctx.store.state.today : '';
+  if (typeof SM.shipUrgency === 'function') { try { const u = SM.shipUrgency(o, t); return u === 'overdue' || u === 'today' || u === 'tomorrow' ? u : ''; } catch (e) { /* fall through */ } }
+  if (!o || o.status === 'cancelled' || o.ship_status !== 'pending' || !str(o.ship_date)) return '';
+  const d = dayNum(o.ship_date) - dayNum(t);
+  return d < 0 ? 'overdue' : d === 0 ? 'today' : d === 1 ? 'tomorrow' : '';
+}
+export function toneOf(o) {
+  const t = ctx.store ? ctx.store.state.today : '';
+  if (typeof SM.orderTone === 'function') { try { const v = SM.orderTone(o, t); if (v === 'done' || v === 'urgent' || v === 'open' || v === 'cancelled') return v; } catch (e) { /* fall through */ } }
+  if (o.status === 'cancelled') return 'cancelled';
+  if (o.payment_status === 'paid' && o.ship_status === 'shipped') return 'done';
+  return urgencyOf(o) ? 'urgent' : 'open';
+}
+export function daysLate(o) { const d = dayNum(ctx.store.state.today) - dayNum(o.ship_date); return d > 0 ? Math.round(d) : 0; }
+// classes for the tinted card + urgency border
+export function toneCls(o) { const t = toneOf(o), u = t === 'urgent' ? urgencyOf(o) : ''; return ' tonebox tone-' + t + (u ? ' urg urg-' + u : ''); }
+// small tag (top-right) that carries the urgency in words, so it works without colour
+export function urgTag(o) {
+  if (toneOf(o) !== 'urgent') return '';
+  const u = urgencyOf(o); if (!u) return '';
+  const t = u === 'overdue' ? 'เลยกำหนด ' + (daysLate(o) || 1) + ' วัน' : u === 'today' ? 'ส่งวันนี้' : 'ส่งพรุ่งนี้';
+  return '<span class="urgtag ' + u + '">' + (u === 'overdue' ? icon('alert') : '') + esc(t) + '</span>';
+}
+
 // ---------- pills ----------
 export const isActive = (o) => o.status !== 'cancelled';
 export const isOver = (o) => isActive(o) && o.ship_status === 'pending' && !!str(o.ship_date) && str(o.ship_date) < today();
@@ -208,7 +241,7 @@ export function payPill(o) {
   return pill('butter', 'รอจ่าย');
 }
 export function shipPill(o) {
-  if (o.ship_status === 'shipped') return pill('gm', 'ส่งแล้ว');
+  if (o.ship_status === 'shipped') return pill('gm', o.delivery_method === 'pickup' ? 'รับแล้ว' : 'ส่งแล้ว');
   return isOver(o) ? pill('rose', 'เลยกำหนด') : pill('sky', 'รอส่ง');
 }
 export const orderPills = (o) => (isActive(o) ? payPill(o) + shipPill(o) : pill('grey', 'ยกเลิก'));

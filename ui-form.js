@@ -1,5 +1,7 @@
 // Item picker, new-order form (incl. quick walk-in sale), item editor, photo import.
 import { ctx, $, esc, num, str, sum, debounce, money, icon, chIcon, thumbHTML, toast, openSheet, dialog, bind, CH, WALKIN_NAME, errMsg, busy, today, findOrder, fmtDate, sortBarHTML, getPickSort, setPickSort, sortPlants, soldHint, timeFieldHTML, validTime, numOrNull, hasNum } from './ui-core.js';
+import { mountMethodField } from './ui-delivery.js';
+import { slotHTML, chooseAndCrop, recrop, getDoc, openViewer, optionsDialog } from './ui-photo.js';
 
 // ---------------------------------------------------------------- item picker
 // f = {items:[{plant_id,code,name,unit_price,qty,max?,custom?}], bonus:{plantId:qty already in this order}}
@@ -19,7 +21,8 @@ export function itemsPicker(host, f, onChange) {
       const head = it.custom
         ? '<input data-in="' + i + '" value="' + esc(it.name) + '" placeholder="ชื่อรายการ เช่น กระถาง / ค่าบริการ" aria-label="ชื่อรายการ">'
         : '<div class="nm">' + esc(it.name) + '</div>' + (it.code ? '<div class="sub">' + esc(it.code) + (it.max ? ' · เหลือ ' + it.max : '') + '</div>' : '');
-      return '<div class="line"><div class="row"><div class="grow">' + head + '</div><button class="xbtn" data-act="rm" data-i="' + i + '" aria-label="ลบรายการ">' + icon('close') + '</button></div>' +
+      const th = it.photo ? it.photo.thumb : it.thumb;
+      return '<div class="line"><div class="row">' + (it.custom ? slotHTML(th, 'data-act="pslot" data-i="' + i + '"', th ? 'รูปรายการ — แตะเพื่อดูตัวเลือก' : 'เพิ่มรูปรายการ') : '') + '<div class="grow">' + head + '</div><button class="xbtn" data-act="rm" data-i="' + i + '" aria-label="ลบรายการ">' + icon('close') + '</button></div>' +
         '<div class="ctl"><div class="pr"><input type="number" inputmode="decimal" data-ip="' + i + '" value="' + (it.unit_price || '') + '" placeholder="ราคา" aria-label="ราคาต่อหน่วย"></div>' +
         '<div class="stepper"><button data-act="dec" data-i="' + i + '" aria-label="ลด">−</button><b>' + it.qty + '</b><button data-act="inc" data-i="' + i + '" aria-label="เพิ่ม">+</button></div>' +
         '<div class="tot" data-lt="' + i + '">' + money(num(it.unit_price) * it.qty) + '</div></div></div>';
@@ -43,8 +46,31 @@ export function itemsPicker(host, f, onChange) {
     rm: (d) => { f.items.splice(+d.i, 1); drawLines(); drawRes(); onChange(); },
     inc: (d) => { const it = f.items[+d.i]; if (it.plant_id && it.qty >= stockOf(it.plant_id)) { toast('สต็อกมีแค่ ' + stockOf(it.plant_id), true); return; } it.qty++; drawLines(); drawRes(); onChange(); },
     dec: (d) => { const it = f.items[+d.i]; if (it.qty > 1) { it.qty--; drawLines(); drawRes(); onChange(); } },
+    pslot: (d) => photoSlot(+d.i),
     custom: () => { f.items.push({ plant_id: '', code: '', name: '', unit_price: 0, qty: 1, custom: true }); drawLines(); onChange(); const el = host.querySelector('[data-in="' + (f.items.length - 1) + '"]'); if (el) el.focus(); },
   });
+  // ---- photo on a custom line. Staged lines keep it.photo = {thumb, full, crop}; lines already saved on the order (it.oi) are written at once via setItemPhoto
+  const saved = (it) => it.oi != null && f.orderId;
+  const hasPhoto = (it) => !!(it.photo || (it.photo_id && it.thumb));
+  const fail = (e) => toast(errMsg(e), true);
+  function applySaved(it, photo, msg) {
+    return ctx.store.setItemPhoto(f.orderId, it.oi, photo).then((o2) => { const x = o2.items[it.oi] || {}; it.photo_id = x.photo_id || ''; it.thumb = x.thumb || ''; drawLines(); if (msg) toast(msg); }, fail);
+  }
+  function putPhoto(it, r, msg) { if (!r) return; if (saved(it)) applySaved(it, r, msg); else { it.photo = { thumb: r.thumb, full: r.full, crop: r.crop }; drawLines(); } }
+  function photoSlot(i) {
+    const it = f.items[i]; if (!it) return;
+    if (!hasPhoto(it)) { chooseAndCrop().then((r) => putPhoto(it, r, 'บันทึกรูปแล้ว')); return; }
+    optionsDialog({
+      view: () => (it.photo ? openViewer(it.name || 'รูป', () => Promise.resolve({ data: it.photo.full, crop: it.photo.crop }), it.photo.thumb) : openViewer(it.name || 'รูป', () => getDoc(it.photo_id), it.thumb)),
+      recrop: async () => {
+        if (it.photo) { const r = await recrop(it.photo.full, it.photo.crop); if (r) { it.photo = { thumb: r.thumb, full: it.photo.full, crop: r.crop }; drawLines(); } return; }
+        const doc = await getDoc(it.photo_id); if (!doc || !doc.data) return toast('ไม่พบรูปต้นฉบับ — ใช้ "เปลี่ยนรูป" แทน', true);
+        const r = await recrop(doc.data, doc.crop); if (r) applySaved(it, { thumb: r.thumb, crop: r.crop }, 'ครอปรูปใหม่แล้ว');
+      },
+      change: (p) => { p.then((r) => putPhoto(it, r, 'เปลี่ยนรูปแล้ว')); },
+      remove: () => { if (saved(it) && it.photo_id) applySaved(it, false, 'ลบรูปแล้ว'); else { delete it.photo; delete it.photo_id; delete it.thumb; drawLines(); } },
+    });
+  }
   host.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.sort !== undefined) { setPickSort(e.target.value); drawRes(); } });
   host.addEventListener('input', (e) => {
     const t = e.target;
@@ -58,13 +84,17 @@ export function itemsPicker(host, f, onChange) {
 }
 
 // unit_cost is sent only when the owner touched it in the new-order cost section (otherwise the store snapshots plant.cost / keeps the old one)
-const payloadItems = (f) => f.items.map((i) => { const o = { plant_id: i.plant_id, name: str(i.name).trim(), unit_price: num(i.unit_price), qty: i.qty }; if (i.cost_set) o.unit_cost = numOrNull(i.unit_cost); return o; });
+const payloadItems = (f) => f.items.map((i) => {
+  const o = { plant_id: i.plant_id, name: str(i.name).trim(), unit_price: num(i.unit_price), qty: i.qty }; if (i.cost_set) o.unit_cost = numOrNull(i.unit_cost);
+  if (!i.plant_id) { if (i.photo) o.photo = i.photo; else if (i.photo_id) { o.photo_id = i.photo_id; o.thumb = i.thumb || ''; } }
+  return o;
+});
 
 // ---------------------------------------------------------------- new order
 export function openOrderForm(opt) {
   opt = opt || {};
   const quick = !!opt.quick, S = ctx.store, st = S.state;
-  const f = { costOpen: false, shipCost: '', chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', phone: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
+  const f = { costOpen: false, shipCost: '', chat: '', mode: 'existing', cid: opt.customerId || '', cq: '', nc: { name: '', contact: '', phone: '', country: '', address: '' }, channel: quick ? 'walkin' : 'facebook', shipped: true, items: [], dm: { method: quick ? '' : 'post', place: '', snap: '' }, pm: quick ? 'full' : 'none', pt: 'payment', ptm: false, qname: '' };
   const cu0 = f.cid && S.getCustomer(f.cid); if (cu0 && CH[cu0.channel]) f.channel = cu0.channel;
   const seg = (id) => '<div class="seg" id="' + id + '"></div>';
 
@@ -83,9 +113,10 @@ export function openOrderForm(opt) {
           '<div class="card"><button class="row" data-act="chatt" style="width:100%;min-height:44px;font-weight:600;color:var(--sage-d)">' + icon('paste') + '<span class="grow" style="text-align:left">วางข้อความจากแชท (ไม่บังคับ)</span>' + icon('chev') + '</button><div id="f-chatw" hidden><textarea id="f-chat" placeholder="วางข้อความจาก Facebook / Instagram ที่นี่ ระบบจะช่วยหาต้นไม้ที่น่าจะใช่" style="margin-top:8px"></textarea><div id="f-sugg"></div></div></div>' +
           '<div class="card"><div class="h3">ลูกค้า</div>' + seg('f-cm') + '<div id="f-cust" style="margin-top:12px"></div></div>' +
           '<div class="card"><div class="h3">ช่องทาง</div>' + seg('f-ch') + '<label class="switch" id="f-wiw" style="margin-top:10px" hidden><input type="checkbox" id="f-wi" checked> ลูกค้ารับของแล้ว</label></div>' +
+          '<div class="card" id="f-dmc"><div class="h3">วิธีส่ง</div><div id="f-dm"></div></div>' +
           '<div class="card"><div class="h3">รายการสินค้า</div><div id="f-items"></div></div>' +
           '<div class="card"><div class="grid2"><div><label class="fld">ค่าส่ง</label><input id="f-fee" type="number" inputmode="decimal" placeholder="0"></div><div><label class="fld">ส่วนลด</label><input id="f-disc" type="number" inputmode="decimal" placeholder="0"></div>' +
-          '<div><label class="fld">วันที่สั่ง</label><input id="f-od" type="date" value="' + esc(st.today) + '"></div><div id="f-sdw"><label class="fld">กำหนดส่ง</label><input id="f-sd" type="date"></div>' +
+          '<div><label class="fld">วันที่สั่ง</label><input id="f-od" type="date" value="' + esc(st.today) + '"></div><div id="f-sdw"><label class="fld" id="f-sdl">กำหนดส่ง</label><input id="f-sd" type="date"></div>' +
           '<div id="f-stw" style="grid-column:1/-1"><label class="fld">เวลาส่ง (ไม่บังคับ)</label>' + timeFieldHTML('f-st', '', 'เวลาส่ง') + '</div><div id="f-sth" class="sub" style="grid-column:1/-1;margin-top:-6px">ใส่เวลา = แอปเตือนก่อนถึงเวลาส่ง</div></div></div>' +
           '<div class="card" id="f-costc"><button class="row costtog" data-act="costtog" aria-expanded="false" style="width:100%;min-height:44px;font-weight:600;color:var(--sage-d)">' + icon('lock') + '<span class="grow" style="text-align:left">ต้นทุนและค่าส่งจริง (ไม่บังคับ)</span>' + icon('chev', 'chev') + '</button><div id="f-cost" hidden></div></div>' +
           '<div class="card"><div class="h3">รับเงิน</div><input id="f-paid" type="number" inputmode="decimal" placeholder="0" aria-label="รับเงินแล้ว (บาท)">' + '<div class="seg" id="f-pt" style="margin-top:10px"></div>' +
@@ -140,7 +171,7 @@ export function openOrderForm(opt) {
         const drawSeg = () => {
           g('f-cm').innerHTML = [['existing', 'ลูกค้าเดิม'], ['new', 'ลูกค้าใหม่']].map((m) => '<button data-act="cm" data-m="' + m[0] + '" class="' + (f.mode === m[0] ? 'on' : '') + '">' + m[1] + '</button>').join('');
           g('f-ch').innerHTML = Object.keys(CH).map((k) => '<button data-act="ch" data-k="' + k + '" class="' + (f.channel === k ? 'on' : '') + '">' + CH[k] + '</button>').join('');
-          g('f-wiw').hidden = !walkin(); const hs = walkin() && f.shipped; g('f-sdw').hidden = hs; g('f-stw').hidden = hs; g('f-sth').hidden = hs;
+          g('f-wiw').hidden = !walkin(); const hs = walkin() && f.shipped; g('f-sdw').hidden = hs; g('f-stw').hidden = hs; g('f-sth').hidden = hs; g('f-dmc').hidden = hs;
         };
         const drawCust = () => {
           const c = g('f-cust');
@@ -190,6 +221,7 @@ export function openOrderForm(opt) {
         });
         B.addEventListener('change', (e) => { if (e.target.id === 'f-wi') { f.shipped = e.target.checked; drawSeg(); } });
         drawSeg(); drawCust();
+        mountMethodField(g('f-dm'), f.dm, (m) => { g('f-sdl').textContent = m.method === 'pickup' ? 'วันนัดรับ' : 'กำหนดส่ง'; });
       } else {
         B.addEventListener('input', (e) => { if (e.target.id === 'f-disc') calc(); else if (e.target.id === 'f-qn') f.qname = e.target.value; });
         B.addEventListener('change', (e) => { if (e.target.id === 'f-qpaid') calc(); });
@@ -224,6 +256,9 @@ export function openOrderForm(opt) {
         if (quick) payload.paid_type = 'payment';
         else payload.shipping_cost = numOrNull(f.shipCost);
         if (!payload.ship_date) payload.ship_time = '';
+        // delivery: walk-in already handed over → ''; otherwise the chosen method (default ไปรษณีย์)
+        payload.delivery_method = shipped || quick ? '' : f.dm.method;
+        payload.pickup_place_id = payload.delivery_method === 'pickup' ? f.dm.place : '';
         if (shipped) payload.already_shipped = true;
         S.createOrder(payload).then((o) => {
           s.close();
@@ -242,8 +277,9 @@ export function openItemsEditor(oid) {
   (o0.items || []).forEach((i) => {
     const p = i.plant_id && S.getPlant(i.plant_id);
     if (i.plant_id) f.bonus[i.plant_id] = (f.bonus[i.plant_id] || 0) + num(i.qty);
-    f.items.push({ plant_id: i.plant_id || '', code: i.code || '', name: i.name, unit_price: num(i.unit_price), qty: num(i.qty), custom: !i.plant_id, max: i.plant_id ? (p ? num(p.qty) : 0) + num(i.qty) : 0 });
+    f.items.push({ plant_id: i.plant_id || '', code: i.code || '', name: i.name, unit_price: num(i.unit_price), qty: num(i.qty), custom: !i.plant_id, max: i.plant_id ? (p ? num(p.qty) : 0) + num(i.qty) : 0, oi: i.plant_id ? null : f.items.length, photo_id: i.photo_id || '', thumb: i.plant_id ? '' : (i.thumb || '') });
   });
+  f.orderId = oid;
   openSheet({
     title: 'แก้ไขรายการสินค้า', sticky: true,
     build(s) {
