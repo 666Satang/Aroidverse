@@ -292,17 +292,24 @@ function seed(adapter, putRaw) {
     putRaw('orders', id, doc);
   };
   // 1. unpaid, ships tomorrow
-  mkOrder(1, { cust: 'C0001', order_date: addDays(today, -1), ship_date: addDays(today, 1), ship_time: '14:00', items: [item('P0002', 'Philodendron Pink Princess', 1800, 1), item('', 'Sphagnum moss pack', 120, 2)], shipping_fee: 450, note: 'ขอรากสะอาดๆ' });
+  mkOrder(1, { cust: 'C0001', order_date: addDays(today, -1), ship_date: addDays(today, 1), ship_time: '14:00', delivery_method: 'post', items: [item('P0002', 'Philodendron Pink Princess', 1800, 1), item('', 'Sphagnum moss pack', 120, 2)], shipping_fee: 450, note: 'ขอรากสะอาดๆ' });
   // 2. deposit only, ships in 3 days
-  mkOrder(2, { cust: 'C0002', order_date: addDays(today, -2), ship_date: addDays(today, 3), items: [item('P0004', 'Hoya Kerrii Variegated', 650, 2), item('P0006', 'Syngonium Albo', 350, 1)], shipping_fee: 380, shipping_cost: 320, payments: [pay(addDays(today, -2), 1000, 'deposit', 'โอนมัดจำ')] });
+  mkOrder(2, { cust: 'C0002', order_date: addDays(today, -2), ship_date: addDays(today, 3), delivery_method: 'lalamove', items: [item('P0004', 'Hoya Kerrii Variegated', 650, 2), item('P0006', 'Syngonium Albo', 350, 1)], shipping_fee: 380, shipping_cost: 320, payments: [pay(addDays(today, -2), 1000, 'deposit', 'โอนมัดจำ')] });
   // 3. fully paid but shipment overdue
-  mkOrder(3, { cust: 'C0004', order_date: addDays(today, -6), ship_date: addDays(today, -3), items: [item('P0003', 'Alocasia Frydek Variegated', 950, 1, null)], shipping_fee: 500, discount: 50, payments: [pay(addDays(today, -6), 1400, 'payment')] });
+  mkOrder(3, { cust: 'C0004', order_date: addDays(today, -6), ship_date: addDays(today, -3), delivery_method: 'post', items: [item('P0003', 'Alocasia Frydek Variegated', 950, 1, null)], shipping_fee: 500, discount: 50, payments: [pay(addDays(today, -6), 1400, 'payment')] });
   // 4. walk-in, paid + handed over today
   mkOrder(4, { cust: 'C0003', order_date: today, items: [item('P0006', 'Syngonium Albo', 350, 1), item('P0004', 'Hoya Kerrii Variegated', 650, 1)], ship_status: 'shipped', shipped_date: today, payments: [pay(today, 1000, 'payment')] });
   // 5. cancelled
   mkOrder(5, { cust: 'C0001', order_date: addDays(today, -4), items: [item('P0001', 'Monstera Albo Variegata', 4500, 1)], status: 'cancelled', payments: [pay(addDays(today, -4), 2000, 'deposit')], note: 'ลูกค้ายกเลิก' });
   // 6. last month, paid + shipped (the sold-out plant)
-  mkOrder(6, { cust: 'C0002', order_date: lastMonthDay, items: [item('P0008', 'Philodendron Spiritus Sancti', 25000, 1)], shipping_fee: 800, ship_status: 'shipped', shipped_date: addDays(lastMonthDay, 2), tracking_no: 'EE123456789TH', ship_date: addDays(lastMonthDay, 2), payments: [pay(lastMonthDay, 12900, 'deposit'), pay(addDays(lastMonthDay, 1), 12900, 'payment')] });
+  mkOrder(6, { cust: 'C0002', order_date: lastMonthDay, items: [item('P0008', 'Philodendron Spiritus Sancti', 25000, 1)], shipping_fee: 800, ship_status: 'shipped', shipped_date: addDays(lastMonthDay, 2), delivery_method: 'post', tracking_no: 'EE123456789TH', ship_date: addDays(lastMonthDay, 2), payments: [pay(lastMonthDay, 12900, 'deposit'), pay(addDays(lastMonthDay, 1), 12900, 'payment')] });
+
+  // 7. pickup at JJ, ships today (not paid in full)
+  mkOrder(7, { cust: 'C0003', order_date: addDays(today, -1), ship_date: today, ship_time: '15:00', delivery_method: 'pickup', pickup_place_id: 'jj', pickup_place_name: 'JJ', items: [item('', 'กระถางเซรามิก 6 นิ้ว', 250, 2), item('', 'ดินปลูกอรอยด์ 5 ลิตร', 150, 1)], payments: [pay(addDays(today, -1), 300, 'deposit')] });
+  // 8. pickup at เซนแจ้ง, custom line with a photo, paid, ships in 2 days
+  const photoId = adapter.newId();
+  putRaw('item_photos', photoId, { data: svgThumb('#FCE9DF', '#E39A74', 640), crop: { x: 0.5, y: 0.5, size: 0.8 } });
+  mkOrder(8, { cust: 'C0002', order_date: today, ship_date: addDays(today, 2), delivery_method: 'pickup', pickup_place_id: 'sj', pickup_place_name: 'เซนแจ้ง', items: [Object.assign(item('', 'ชั้นวางไม้ (ทำพิเศษ)', 890, 1), { photo_id: photoId, thumb: svgThumb('#FCE9DF', '#E39A74', 96) })], payments: [pay(today, 890, 'payment')] });
 
   const exp = (date, category, amount, note) => putRaw('expenses', adapter.newId(), { date, ym: date.slice(0, 7), category, amount, note: note || '', deleted: false, created_at: iso(date, '09:00:00'), updated_at: iso(date, '09:00:00') });
   exp(firstOfMonth, 'ค่าที่', 1500, 'ค่าที่ตลาดนัด');
@@ -311,7 +318,7 @@ function seed(adapter, putRaw) {
 
   const inv = {};
   Object.keys(invCount).forEach(k => { inv[k] = invCount[k]; });
-  putRaw('meta', 'counters', { plant: 8, customer: 4, order: 6, inv });
+  putRaw('meta', 'counters', { plant: 8, customer: 4, order: 8, inv });
   putRaw('settings', 'main', { shop_name: 'Leaf & Co. (ตัวอย่าง)', bank_name: 'Kasikorn Bank (KBank)', bank_account_no: '123-4-56789-0', bank_account_name: 'Demo Seller', contact_email: 'shop@example.com', currency: 'THB', invoice_prefix: 'INV', invoice_note: 'Thank you for your order!', gemini_api_key: '', gemini_model: 'gemini-flash-latest' });
   void now;
 }

@@ -46,6 +46,12 @@ export const DEFAULT_SETTINGS = {
   push_time_lead_min: 120
 };
 const LEGACY_SETTING_KEYS = ['shop_name', 'bank_name', 'bank_account_no', 'bank_account_name', 'contact_email', 'currency', 'invoice_prefix', 'invoice_note', 'gemini_api_key', 'gemini_model'];
+export const DELIVERY_METHODS = ['post', 'lalamove', 'pickup'];
+export const DELIVERY_LABELS = { post: 'ไปรษณีย์', lalamove: 'Lalamove', pickup: 'นัดรับ' };
+export const PLACE_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'grey'];
+export const DEFAULT_PICKUP_PLACES = [{ id: 'jj', name: 'JJ', color: 'red' }, { id: 'sj', name: 'เซนแจ้ง', color: 'yellow' }];
+const THUMB_MAX = 12000;          // chars of a thumb data-URL accepted on an order item
+const ITEM_FULL_MAX = 900000;     // chars of a full item photo (Firestore doc limit is 1 MiB)
 const PAGE = 50;
 const LS_SYNC = 'plantapp_customers_sync';
 
@@ -106,10 +112,10 @@ function pad(n, d) { let s = String(n); while (s.length < d) s = '0' + s; return
 
 // Recompute every derived field of an order (totals, payments aggregate, status, open flag...).
 export function deriveOrder(o) {
-  const items = (o.items || []).map(i => ({
+  const items = (o.items || []).map(i => Object.assign({
     plant_id: i.plant_id || '', code: i.code || '', name: i.name, unit_price: round2(i.unit_price), qty: i.qty,
     unit_cost: (i.unit_cost === undefined || i.unit_cost === null || i.unit_cost === '' || !Number.isFinite(Number(i.unit_cost))) ? null : round2(Math.max(0, Number(i.unit_cost)))
-  }));
+  }, i.photo_id ? { photo_id: String(i.photo_id), thumb: String(i.thumb || '') } : null));
   const subtotal = round2(items.reduce((s, i) => s + i.unit_price * i.qty, 0));
   const shipping_fee = round2(Math.max(0, num(o.shipping_fee, 0)));
   const discount = round2(Math.max(0, num(o.discount, 0)));
@@ -146,6 +152,31 @@ export function deriveOrder(o) {
   });
 }
 
+function addDaysStr(ds, n) {
+  const d = new Date(ds + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// 'overdue' | 'today' | 'tomorrow' | '' — only for active orders still waiting to ship with a ship_date
+export function shipUrgency(order, today) {
+  const o = order || {};
+  if (o.status === 'cancelled' || o.ship_status === 'shipped') return '';
+  const sd = String(o.ship_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sd) || !/^\d{4}-\d{2}-\d{2}$/.test(String(today || ''))) return '';
+  if (sd < today) return 'overdue';
+  if (sd === today) return 'today';
+  if (sd === addDaysStr(today, 1)) return 'tomorrow';
+  return '';
+}
+// 'done' | 'urgent' | 'open' | 'cancelled'
+export function orderTone(order, today) {
+  const o = order || {};
+  if (o.status === 'cancelled') return 'cancelled';
+  if (o.payment_status === 'paid' && o.ship_status === 'shipped') return 'done';
+  if (shipUrgency(o, today)) return 'urgent';
+  return 'open';
+}
+
 function emptyMonthRow(month, year) {
   return {
     month, ym: year + '-' + pad(month, 2), orders: 0, plants: 0, sales: 0, facebook: 0, instagram: 0, walkin: 0, other: 0, received: 0, outstanding: 0, cancelled: 0,
@@ -174,6 +205,8 @@ export function createStore(adapter, opts) {
   let settingsDoc = null;
   const photoCache = new Map();
   const photoInflight = new Map();
+  const itemPhotoCache = new Map();
+  const itemPhotoInflight = new Map();
 
   const state = {
     ready: false, online: true, pending: false, today: today(),
@@ -295,12 +328,48 @@ export function createStore(adapter, opts) {
     return new Error('สต็อกไม่พอ: ' + name + (code ? ' (' + code + ')' : '') + ' เหลือ ' + left + ' ต้น แต่' + verb + ' ' + want + ' ต้น');
   }
 
+  // validate a {thumb, full, crop} (or re-crop {thumb, crop}) item photo; returns normalised values
+  function checkItemPhoto(photo, allowRecrop) {
+    const bad = () => new Error('ข้อมูลรูปไม่ถูกต้อง');
+    if (!photo || typeof photo !== 'object' || typeof photo.thumb !== 'string' || photo.thumb.indexOf('data:image/') !== 0) throw bad();
+    if (photo.thumb.length > THUMB_MAX) throw new Error('รูปย่อใหญ่เกินไป (เกิน 12 KB) กรุณาลดขนาดรูปย่อ');
+    const recrop = allowRecrop && typeof photo.full !== 'string';
+    if (!recrop) {
+      if (typeof photo.full !== 'string' || photo.full.indexOf('data:image/') !== 0) throw bad();
+      if (photo.full.length > ITEM_FULL_MAX) throw new Error('รูปใหญ่เกินไป');
+    }
+    return { thumb: photo.thumb, full: recrop ? null : photo.full, crop: photo.crop ? normCrop(photo.crop) : null, recrop };
+  }
+  function pickupPlaces() {
+    const l = state.settings.pickup_places;
+    const src = Array.isArray(l) ? l : DEFAULT_PICKUP_PLACES;
+    return src.filter(p => p && p.id).map(p => ({ id: String(p.id), name: str(p.name), color: PLACE_COLORS.indexOf(p.color) >= 0 ? p.color : 'grey' }));
+  }
+  // resolve the delivery fields of an order: returns {delivery_method, pickup_place_id, pickup_place_name}
+  function deliveryFields(method, placeId, prevOrder) {
+    const m = str(method).toLowerCase();
+    if (m !== '' && DELIVERY_METHODS.indexOf(m) < 0) throw new Error('วิธีส่งไม่ถูกต้อง');
+    if (m !== 'pickup') return { delivery_method: m, pickup_place_id: '', pickup_place_name: '' };
+    const id = str(placeId);
+    if (!id) return { delivery_method: m, pickup_place_id: '', pickup_place_name: '' };
+    const pl = pickupPlaces().find(x => x.id === id);
+    let name = pl ? pl.name : '';
+    if (!pl && prevOrder && prevOrder.pickup_place_id === id) name = str(prevOrder.pickup_place_name);
+    return { delivery_method: m, pickup_place_id: id, pickup_place_name: name };
+  }
+
   // Validate + normalise items. old = {plantId: qty} of the order being edited (null for new orders).
   function normItems(itemsIn, old, prev) {
     const used = new Set();
     if (!Array.isArray(itemsIn) || !itemsIn.length) throw new Error('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ');
     const items = [];
     const need = {};
+    const photoSets = [];
+    // custom-line photos: claim previous photo_ids that the incoming lines refer to explicitly
+    const prevPhoto = {};
+    (prev || []).forEach(pv => { if (!pv.plant_id && pv.photo_id) prevPhoto[pv.photo_id] = pv; });
+    const claimed = {};
+    itemsIn.forEach(it => { it = it || {}; if (!str(it.plant_id) && !it.photo && it.photo !== false && it.photo_id && prevPhoto[it.photo_id] && !claimed[it.photo_id]) claimed[it.photo_id] = true; });
     itemsIn.forEach((it, i) => {
       it = it || {};
       const ref = str(it.plant_id);
@@ -331,9 +400,32 @@ export function createStore(adapter, opts) {
         }
         if (!kept && plant) cost = plant.cost === undefined || plant.cost === null ? null : num(plant.cost, null);
       }
-      items.push({ plant_id: pid, code: pid ? code : '', name, unit_price: round2(price), qty, unit_cost: cost });
+      const line = { plant_id: pid, code: pid ? code : '', name, unit_price: round2(price), qty, unit_cost: cost };
+      if (!pid) {
+        if (it.photo) {
+          const ph = checkItemPhoto(it.photo, false);
+          const phId = adapter.newId();
+          photoSets.push({ id: phId, data: { data: ph.full, crop: ph.crop } });
+          line.photo_id = phId; line.thumb = ph.thumb;
+        } else if (it.photo !== false && prev) {
+          let keep = null;
+          if (it.photo_id && claimed[it.photo_id] === true) { keep = prevPhoto[it.photo_id]; claimed[it.photo_id] = 'used'; }
+          else {
+            for (let k = 0; k < prev.length; k++) {
+              const pv = prev[k];
+              if (pv.plant_id || !pv.photo_id || claimed[pv.photo_id] || pv.name !== name) continue;
+              keep = pv; claimed[pv.photo_id] = 'used'; break;
+            }
+          }
+          if (keep) { line.photo_id = keep.photo_id; line.thumb = keep.thumb || ''; }
+        }
+      }
+      items.push(line);
     });
-    return { items, need };
+    const kept = {};
+    items.forEach(l => { if (l.photo_id) kept[l.photo_id] = true; });
+    const photoDeletes = Object.keys(prevPhoto).filter(k => !kept[k]);
+    return { items, need, photoSets, photoDeletes };
   }
 
   // ----- commit helper -----------------------------------------------------
@@ -598,7 +690,7 @@ export function createStore(adapter, opts) {
   // ----- orders: creation (shared by createOrder / createOrdersBatch) ------
   function newPlan() {
     return { now: nowIso(), today: today(), counters: { inv: Object.assign({}, counters.inv || {}) }, plantPatches: new Map(),
-      newCustomers: [], orders: [], scan: {}, prefix: str(state.settings.invoice_prefix) || 'INV' };
+      newCustomers: [], orders: [], photoOps: [], scan: {}, prefix: str(state.settings.invoice_prefix) || 'INV' };
   }
   function scanMax(plan, key, map, prefix) {
     if (plan.scan[key] === undefined) {
@@ -674,6 +766,7 @@ export function createStore(adapter, opts) {
     const subtotal = round2(items.reduce((s, x) => s + x.unit_price * x.qty, 0));
     const total = round2(Math.max(0, subtotal + shipping - discount));
     const paid = round2(Math.max(0, num(payload.paid_amount, 0)));
+    const dlv = deliveryFields(payload.delivery_method, payload.pickup_place_id, null);
     const shipped = payload.already_shipped === true || String(payload.already_shipped).toLowerCase() === 'true';
     let ptype = str(payload.paid_type).toLowerCase();
     if (ptype !== 'deposit' && ptype !== 'payment') ptype = paid < total ? 'deposit' : 'payment';
@@ -695,8 +788,10 @@ export function createStore(adapter, opts) {
       customer_name: customerName, channel, items, shipping_fee: shipping, discount,
       payments: paid > 0 ? [{ id: adapter.newId(), date: orderDate, amount: paid, type: ptype, note: '' }] : [],
       ship_date: shipDate, ship_time: shipTime, shipping_cost: shippingCost, ship_status: shipped ? 'shipped' : 'pending', shipped_date: shipped ? orderDate : '',
-      tracking_no: '', status: 'active', note: str(payload.note), created_at: plan.now, updated_at: plan.now
+      tracking_no: '', status: 'active', note: str(payload.note), created_at: plan.now, updated_at: plan.now,
+      delivery_method: dlv.delivery_method, pickup_place_id: dlv.pickup_place_id, pickup_place_name: dlv.pickup_place_name
     });
+    ni.photoSets.forEach(ps => { plan.photoOps.push({ op: 'set', path: 'item_photos/' + ps.id, data: ps.data }); itemPhotoCache.set(ps.id, { data: ps.data.data, crop: ps.data.crop }); });
     plan.orders.push(order);
     orders.set(id, order);
     Object.keys(ni.need).forEach(pid => {
@@ -710,6 +805,7 @@ export function createStore(adapter, opts) {
     const ops = [];
     plan.newCustomers.forEach(c => ops.push({ op: 'set', path: 'customers/' + c.id, data: c }));
     plan.orders.forEach(o => ops.push({ op: 'set', path: 'orders/' + o.id, data: o }));
+    ops.push.apply(ops, plan.photoOps);
     plan.plantPatches.forEach((patch, pid) => {
       plants.set(pid, applyPatch(Object.assign({}, plants.get(pid)), patch));
       ops.push({ op: 'merge', path: 'plants/' + pid, data: patch });
@@ -765,6 +861,11 @@ export function createStore(adapter, opts) {
     if (has('discount')) ch.discount = round2(Math.max(0, num(patch.discount, 0)));
     if (has('note')) ch.note = str(patch.note);
     if (has('tracking_no')) ch.tracking_no = str(patch.tracking_no);
+    if (has('delivery_method') || has('pickup_place_id')) {
+      const method = has('delivery_method') ? patch.delivery_method : o.delivery_method;
+      const pid = has('pickup_place_id') ? patch.pickup_place_id : o.pickup_place_id;
+      Object.assign(ch, deliveryFields(method, pid, o));
+    }
     return commitOrder(o, ch);
   }
 
@@ -808,9 +909,101 @@ export function createStore(adapter, opts) {
       if (cur) plants.set(pid, applyPatch(Object.assign({}, cur), patch));
       plantOps.push({ op: 'merge', path: 'plants/' + pid, data: patch });
     });
-    const next = commitOrder(o, { items: ni.items }, plantOps);
+    const photoOps = [];
+    ni.photoSets.forEach(ps => { photoOps.push({ op: 'set', path: 'item_photos/' + ps.id, data: ps.data }); itemPhotoCache.set(ps.id, { data: ps.data.data, crop: ps.data.crop }); });
+    ni.photoDeletes.forEach(pid => { photoOps.push({ op: 'delete', path: 'item_photos/' + pid }); itemPhotoCache.set(pid, null); });
+    const next = commitOrder(o, { items: ni.items }, plantOps.concat(photoOps));
     ensure.forEach(ensurePlant);
     return next;
+  }
+
+  // photo on a custom line: {thumb, full, crop} new/replace · {thumb, crop} re-crop · false remove
+  async function setItemPhoto(orderId, index, photo) {
+    const o = mustOrder(orderId);
+    assertActive(o);
+    const idx = Number(index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= o.items.length) throw new Error('ไม่พบรายการสินค้าลำดับที่ ' + (idx + 1));
+    const it = o.items[idx];
+    if (it.plant_id) throw new Error('ใส่รูปได้เฉพาะรายการที่เพิ่มเอง (ต้นไม้ใช้รูปจากสต็อก)');
+    const items = o.items.map(x => Object.assign({}, x));
+    const cur = items[idx];
+    const ops = [];
+    if (photo === false || photo === null || photo === undefined) {
+      if (!cur.photo_id) return o;
+      ops.push({ op: 'delete', path: 'item_photos/' + cur.photo_id });
+      itemPhotoCache.set(cur.photo_id, null);
+      delete cur.photo_id; delete cur.thumb;
+    } else {
+      const ph = checkItemPhoto(photo, true);
+      if (ph.recrop) {
+        if (!cur.photo_id) throw new Error('ยังไม่มีรูปให้ครอป');
+        ops.push({ op: 'merge', path: 'item_photos/' + cur.photo_id, data: { crop: ph.crop } });
+        const c = itemPhotoCache.get(cur.photo_id);
+        if (c) itemPhotoCache.set(cur.photo_id, { data: c.data, crop: ph.crop });
+        cur.thumb = ph.thumb;
+      } else {
+        const phId = cur.photo_id || adapter.newId();
+        ops.push({ op: 'set', path: 'item_photos/' + phId, data: { data: ph.full, crop: ph.crop } });
+        itemPhotoCache.set(phId, { data: ph.full, crop: ph.crop });
+        cur.photo_id = phId; cur.thumb = ph.thumb;
+      }
+    }
+    return commitOrder(o, { items }, ops);
+  }
+
+  function getItemPhotoDoc(photoId) {
+    const id = str(photoId);
+    if (!id) return Promise.resolve(null);
+    if (itemPhotoCache.has(id)) return Promise.resolve(itemPhotoCache.get(id));
+    if (itemPhotoInflight.has(id)) return itemPhotoInflight.get(id);
+    const pr = adapter.getDoc('item_photos/' + id).then(d => {
+      const v = d && d.data ? { data: d.data, crop: d.crop || null } : null;
+      if (v) itemPhotoCache.set(id, v);
+      return v;
+    }).catch(() => null).then(v => { itemPhotoInflight.delete(id); return v; });
+    itemPhotoInflight.set(id, pr);
+    return pr;
+  }
+
+  // ----- pickup places (settings.pickup_places) -----------------------------
+  async function savePickupPlace(p) {
+    p = p || {};
+    const name = str(p.name);
+    if (!name) throw new Error('กรุณาระบุชื่อสถานที่นัดรับ');
+    const color = str(p.color) || 'grey';
+    if (PLACE_COLORS.indexOf(color) < 0) throw new Error('สีไม่ถูกต้อง');
+    const list = pickupPlaces();
+    const id = str(p.id);
+    let place;
+    if (id) {
+      const i = list.findIndex(x => x.id === id);
+      if (i < 0) throw new Error('ไม่พบสถานที่นัดรับ');
+      place = { id, name, color };
+      list[i] = place;
+    } else {
+      place = { id: adapter.newId(), name, color };
+      list.push(place);
+    }
+    saveSettings({ pickup_places: list });
+    return place;
+  }
+  async function deletePickupPlace(id) {
+    id = str(id);
+    const list = pickupPlaces();
+    if (!list.some(x => x.id === id)) throw new Error('ไม่พบสถานที่นัดรับ');
+    saveSettings({ pickup_places: list.filter(x => x.id !== id) });
+    return true;
+  }
+  async function movePickupPlace(id, dir) {
+    id = str(id);
+    const list = pickupPlaces();
+    const i = list.findIndex(x => x.id === id);
+    if (i < 0) throw new Error('ไม่พบสถานที่นัดรับ');
+    const j = i + (Number(dir) < 0 ? -1 : 1);
+    if (j < 0 || j >= list.length) return list;
+    const t = list[i]; list[i] = list[j]; list[j] = t;
+    saveSettings({ pickup_places: list });
+    return list;
   }
 
   // costs may be edited on any non-cancelled order (shipped / paid included)
@@ -1471,7 +1664,7 @@ export function createStore(adapter, opts) {
     start, stop, subscribe, state, onError, checkRollover,
     onLocalChange, getPlant, getCustomer, getOrder, getExpense: id => expenses.get(id) || null, balance,
     saveSettings, savePlant, deletePlant, getPlantPhoto, getPlantPhotoDoc, purgeOldPhotos, loadSoldPlants, saveCustomer, deleteCustomer,
-    createOrder, createOrdersBatch, updateOrder, updateOrderItems, recordPayment, deletePayment,
+    createOrder, createOrdersBatch, updateOrder, updateOrderItems, setItemPhoto, getItemPhotoDoc, pickupPlaces, savePickupPlace, deletePickupPlace, movePickupPlace, recordPayment, deletePayment,
     markShipped, unmarkShipped, cancelOrder,
     updateOrderCosts, saveExpense, deleteExpense, loadExpenses, expenseCategories,
     loadMoreOrders, loadCustomerOrders, loadMonth, monthlyReport, dailyReport, monthStats, exportAll, importLegacy, restoreBackup

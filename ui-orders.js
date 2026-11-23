@@ -1,6 +1,9 @@
 // Orders tab, order detail sheet, payment / ship / edit dialogs, invoice preview.
 import { ctx, $, esc, num, str, money, fmtDate, fmtShip, shipKey, validTime, timeFieldHTML, costInfo, hasNum, numOrNull, negCls, icon, chIcon, toast, openSheet, dialog, confirmDlg, bind, debounce, CH, errMsg, orderPills, isActive, isOver, balanceOf, findOrder, emptyHTML, moreBtn, today, depositOnly, pill, canShareFile, downloadBlob, shareOrDownload, busy, closeAllSheets } from './ui-core.js';
 import * as PR from './printer.js';
+import { toneCls, urgTag, urgencyOf, toneOf, daysLate } from './ui-core.js';
+import { METHODS, methodPill, methodMatch, methodOf, isPickup, placeOf, places, mountMethodField, methodLabel } from './ui-delivery.js';
+import { slotHTML, openDetailViewer, detailActions } from './ui-photo.js';
 
 export const FLT = {
   all: () => true,
@@ -29,21 +32,22 @@ export function orderCard(o) {
     if (o.ship_status === 'pending' && str(o.ship_date)) parts.push('ส่ง ' + fmtShip(o, true));
     due = parts.join(' · ');
   }
-  return '<button class="ocard' + (act ? '' : ' dim') + '" data-act="order" data-id="' + esc(o.id) + '">' +
+  return '<button class="ocard' + (act ? '' : ' dim') + toneCls(o) + '" data-act="order" data-id="' + esc(o.id) + '">' + urgTag(o) +
     '<div class="l1"><span class="ava ' + esc(o.channel) + '">' + chIcon(o.channel) + '</span><div class="grow"><div class="nm trunc">' + esc(o.customer_name) + '</div><div class="meta trunc">' + esc(o.invoice_no || o.code) + ' · ' + esc(fmtDate(o.order_date, true)) + '</div></div><div class="amt">' + money(o.total) + '</div></div>' +
     '<div class="items clamp2">' + esc(itemsSummary(o)) + '</div>' +
-    '<div class="l3">' + orderPills(o) + (due ? '<span class="due">' + esc(due) + '</span>' : '') + '</div></button>';
+    '<div class="l3">' + orderPills(o) + methodPill(o) + (due ? '<span class="due">' + esc(due) + '</span>' : '') + '</div></button>';
 }
 
 // ---------------------------------------------------------------- tab
 export const ordersView = {
   mount(el) {
     const ui = ctx.ui;
-    el.innerHTML = '<div class="search"><span>' + icon('search') + '</span><input id="osearch" type="search" placeholder="ค้นหาลูกค้า เลขบิล หรือชื่อต้นไม้" value="' + esc(ui.oq) + '" autocomplete="off" enterkeyhint="search"></div><div class="chips" id="ochips"></div><div class="list" id="olist"></div>';
+    el.innerHTML = '<div class="search"><span>' + icon('search') + '</span><input id="osearch" type="search" placeholder="ค้นหาลูกค้า เลขบิล หรือชื่อต้นไม้" value="' + esc(ui.oq) + '" autocomplete="off" enterkeyhint="search"></div><div class="chips" id="ochips"></div><div class="chips sub" id="omchips" hidden></div><div class="list" id="olist"></div>';
     const upd = () => this.update(el);
     $('#osearch', el).addEventListener('input', debounce((e) => { ui.oq = e.target.value; ui.limO = 60; upd(); }, 200));
     bind(el, {
       of: (d) => { ui.of = d.f; ui.limO = 60; upd(); },
+      om: (d) => { ui.om = d.k; ui.limO = 60; upd(); },
       order: (d) => openOrder(d.id),
       more: () => { ui.limO += 60; upd(); },
       older: async (d, t) => { t.disabled = true; t.innerHTML = '<span class="spin sm"></span> กำลังโหลด…'; try { await ctx.store.loadMoreOrders(); } catch (e) { toast(errMsg(e), true); } upd(); },
@@ -58,6 +62,15 @@ export const ordersView = {
       BASE.map((c) => '<button class="chip' + (ui.of === c[0] ? ' on' : '') + '" data-act="of" data-f="' + c[0] + '">' + c[1] + '</button>').join('');
     const fl = FLT[ui.of] || FLT.all;
     let l = st.orders.filter(fl).filter((o) => !q || (str(o.customer_name) + ' ' + str(o.invoice_no) + ' ' + str(o.items_summary) + ' ' + str(o.code)).toLowerCase().includes(q));
+    // รอส่ง: second row of chips to narrow by delivery method / pickup place (choice kept in memory only)
+    const mrow = $('#omchips', el);
+    if (ui.of === 'pending') {
+      const pl = places(), keys = [['all', 'ทั้งหมด', ''], ['post', 'ไปรษณีย์', ''], ['lalamove', 'Lalamove', ''], ['pickup', 'นัดรับ', '']].concat(pl.map((p) => ['pk:' + p.id, p.name, p.color]), [['none', 'ไม่ระบุ', '']]);
+      if (!keys.some((k) => k[0] === ui.om)) ui.om = 'all';
+      mrow.hidden = false;
+      mrow.innerHTML = keys.map((k) => '<button class="chip sm' + (ui.om === k[0] ? ' on' : '') + (k[2] ? ' pkc pk-' + k[2] : '') + '" data-act="om" data-k="' + esc(k[0]) + '" aria-pressed="' + (ui.om === k[0]) + '">' + (k[2] ? '<i></i>' : '') + '<span class="trunc">' + esc(k[1]) + '</span> <b>' + l.filter((o) => methodMatch(o, k[0])).length + '</b></button>').join('');
+      l = l.filter((o) => methodMatch(o, ui.om));
+    } else { mrow.hidden = true; mrow.innerHTML = ''; }
     if (ui.of === 'today') l = l.slice().sort((a, b) => (shipKey(a) < shipKey(b) ? -1 : shipKey(a) > shipKey(b) ? 1 : 0));
     let h = '';
     if (!l.length) {
@@ -88,17 +101,27 @@ export function openOrder(id) {
       const act = isActive(o), bal = balanceOf(o), over = bal < -0.005;
       s.setTitle(o.invoice_no || o.code || 'ออเดอร์');
       const cu = S.getCustomer(o.customer_id);
-      const rows = (o.items || []).map((i) => '<div class="kv"><span>' + esc(i.name) + '<br><span class="sub">' + num(i.qty) + ' × ' + money(i.unit_price) + '</span></span><b>' + money(num(i.unit_price) * num(i.qty)) + '</b></div>').join('');
+      const pk = isPickup(o);
+      const rows = (o.items || []).map((i, ix) => {
+        let th;
+        if (i.plant_id) { const pl = S.getPlant(i.plant_id); th = '<span class="thumb xs">' + (pl && pl.thumb ? '<img alt="" decoding="async" src="' + esc(pl.thumb) + '">' : icon('leaf')) + '</span>'; }
+        else if (i.thumb) th = slotHTML(i.thumb, 'data-act="iphoto" data-i="' + ix + '"', 'ดูรูป ' + str(i.name));
+        else if (act) th = '<button type="button" class="pslot add" data-act="iadd" data-i="' + ix + '" aria-label="เพิ่มรูป ' + esc(i.name) + '">' + icon('plus') + '<span>รูป</span></button>';
+        else th = '<span class="thumb xs">' + icon('box') + '</span>';
+        return '<div class="irow">' + th + '<div class="grow"><div class="nm">' + esc(i.name) + '</div><div class="sub">' + num(i.qty) + ' × ' + money(i.unit_price) + '</div></div><b class="num">' + money(num(i.unit_price) * num(i.qty)) + '</b></div>';
+      }).join('');
       const pays = (o.payments || []).map((p) => {
         const t = PT[p.type] || PT.payment;
         return '<div class="pay"><div class="grow"><div>' + pill(t[0], t[1]) + ' <span class="d">' + esc(fmtDate(p.date)) + (p.note ? ' · ' + esc(p.note) : '') + '</span></div></div><div class="a ' + (num(p.amount) < 0 ? 'red' : '') + '">' + money(p.amount) + '</div><button class="xbtn" data-act="delpay" data-id="' + esc(p.id) + '" aria-label="ลบรายการรับเงิน">' + icon('trash') + '</button></div>';
       }).join('');
       let ship = '';
-      if (o.ship_status === 'shipped') ship = '<div class="kv"><span>ส่งแล้วเมื่อ</span><b>' + esc(fmtDate(o.shipped_date)) + '</b></div>' + (o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '');
-      else ship = '<div class="kv"><span>กำหนดส่ง</span><b class="' + (isOver(o) ? 'red' : '') + '">' + (o.ship_date ? esc(fmtShip(o)) : 'ยังไม่กำหนด') + '</b></div>' + (o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '');
+      const trk = !pk && o.tracking_no ? '<div class="kv"><span>เลขพัสดุ</span><b>' + esc(o.tracking_no) + '</b></div>' : '';
+      const mrowH = methodOf(o) ? '<div class="kv"><span>วิธีส่ง</span><span>' + methodPill(o) + '</span></div>' : '';
+      if (o.ship_status === 'shipped') ship = mrowH + '<div class="kv"><span>' + (pk ? 'รับแล้วเมื่อ' : 'ส่งแล้วเมื่อ') + '</span><b>' + esc(fmtDate(o.shipped_date)) + '</b></div>' + trk;
+      else ship = mrowH + '<div class="kv"><span>' + (pk ? 'นัดรับ' : 'กำหนดส่ง') + '</span><b class="' + (isOver(o) ? 'red' : '') + '">' + (o.ship_date ? esc(fmtShip(o)) : 'ยังไม่กำหนด') + '</b></div>' + trk;
       s.body.innerHTML =
-        '<div class="card"><div class="row"><span class="ava ' + esc(o.channel) + '">' + chIcon(o.channel) + '</span><div class="grow"><div class="nm" style="font-weight:700;font-size:18px;line-height:1.35">' + esc(o.customer_name) + '</div><div class="sub">' + esc(CH[o.channel] || '') + ' · สั่งเมื่อ ' + esc(fmtDate(o.order_date)) + '</div></div></div>' +
-        '<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:6px">' + orderPills(o) + '</div>' +
+        '<div class="card' + toneCls(o) + '">' + urgTag(o) + '<div class="row"><span class="ava ' + esc(o.channel) + '">' + chIcon(o.channel) + '</span><div class="grow"><div class="nm" style="font-weight:700;font-size:18px;line-height:1.35">' + esc(o.customer_name) + '</div><div class="sub">' + esc(CH[o.channel] || '') + ' · สั่งเมื่อ ' + esc(fmtDate(o.order_date)) + '</div></div></div>' +
+        '<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:6px">' + orderPills(o) + methodPill(o) + '</div>' +
         (cu && cu.address && act && o.ship_status === 'pending' ? '<div class="sub" style="margin-top:12px;display:flex;gap:8px">' + icon('pin') + '<span style="white-space:pre-wrap;word-break:break-word">' + esc(cu.address) + '</span></div>' : '') + '</div>' +
         '<div class="card"><div class="h3">รายการ</div>' + rows + '<div class="hr"></div>' +
         '<div class="kv mut"><span>รวมสินค้า</span><span>' + money(o.subtotal) + '</span></div>' +
@@ -123,7 +146,7 @@ export function openOrder(id) {
       paintQuick();
       s.foot.innerHTML = '<button class="btn ghost" data-act="inv">' + icon('receipt') + ' บิล</button>' +
         (act && (bal > 0.005 || over) ? '<button class="btn" data-act="pay">' + icon('cash') + (over ? ' คืนเงิน' : ' รับเงิน') + '</button>' : '') +
-        (act && o.ship_status === 'pending' ? '<button class="btn sec" data-act="ship">' + icon('truck') + ' ส่งแล้ว</button>' : '');
+        (act && o.ship_status === 'pending' ? '<button class="btn sec" data-act="ship">' + icon(pk ? 'check' : 'truck') + (pk ? ' ลูกค้ารับแล้ว' : ' ส่งแล้ว') + '</button>' : '');
       if (!s.bound) {
         s.bound = true;
         const h = {
@@ -134,6 +157,8 @@ export function openOrder(id) {
           inv: () => openInvoice(id),
           label: () => openLabel(id),
           qprint: () => quickPrint(id),
+          iphoto: (d) => { const o2 = findOrder(id); if (o2) openDetailViewer(o2, +d.i); },
+          iadd: (d) => detailActions(id, +d.i).add(),
           delpay: (d) => {
             const o2 = findOrder(id), p = (o2.payments || []).find((x) => x.id === d.id); if (!p) return;
             const t = PT[p.type] || PT.payment;
@@ -168,19 +193,25 @@ function payDlg(id) {
   amtEl.oninput = () => { if (manual || over || !noPays) return; const a = num(amtEl.value), nt = a > 0 && a < bal ? 'deposit' : 'payment'; if (nt !== type) { type = nt; seg.innerHTML = segHtml(type); } };
 }
 function shipDlg(id) {
-  const o = findOrder(id);
-  dialog('ทำเครื่องหมายส่งแล้ว', '<label class="fld">วันที่ส่ง</label><input type="date" id="d-date" value="' + esc(today()) + '"><label class="fld">เลขพัสดุ (ถ้ามี)</label><input id="d-trk" value="' + esc(o.tracking_no) + '" autocomplete="off">', 'ยืนยันส่งแล้ว', (d) =>
-    ctx.store.markShipped(id, { date: $('#d-date', d.el).value || today(), tracking_no: $('#d-trk', d.el).value.trim() }).then(() => toast('บันทึกว่าส่งแล้ว')));
+  const o = findOrder(id), pk = isPickup(o);
+  dialog(pk ? 'ลูกค้ารับของแล้ว' : 'ทำเครื่องหมายส่งแล้ว', '<label class="fld">' + (pk ? 'วันที่รับ' : 'วันที่ส่ง') + '</label><input type="date" id="d-date" value="' + esc(today()) + '">' + (pk ? '' : '<label class="fld">เลขพัสดุ (ถ้ามี)</label><input id="d-trk" value="' + esc(o.tracking_no) + '" autocomplete="off">'), pk ? 'ยืนยันรับแล้ว' : 'ยืนยันส่งแล้ว', (d) =>
+    ctx.store.markShipped(id, { date: $('#d-date', d.el).value || today(), tracking_no: pk ? str(o.tracking_no) : $('#d-trk', d.el).value.trim() }).then(() => toast(pk ? 'บันทึกว่าลูกค้ารับแล้ว' : 'บันทึกว่าส่งแล้ว')));
 }
 function editDlg(id) {
   const o = findOrder(id);
-  dialog('แก้ไขออเดอร์', '<div class="grid2"><div><label class="fld">วันที่สั่ง</label><input type="date" id="e-od" value="' + esc(o.order_date) + '"></div><div><label class="fld">กำหนดส่ง</label><input type="date" id="e-sd" value="' + esc(o.ship_date) + '"></div>' +
-    '<div style="grid-column:1/-1"><label class="fld">เวลาส่ง (ไม่บังคับ)</label>' + timeFieldHTML('e-st', o.ship_time, 'เวลาส่ง') + '</div><div style="grid-column:1/-1"><label class="fld">เลขพัสดุ</label><input id="e-trk" value="' + esc(o.tracking_no) + '"></div>' +
+  const m = { method: methodOf(o), place: methodOf(o) === 'pickup' ? str(o.pickup_place_id) : '', snap: str(o.pickup_place_name) };
+  const d = dialog('แก้ไขออเดอร์', '<label class="fld" style="margin-top:0">วิธีส่ง</label><div id="e-mf"></div><div class="grid2"><div><label class="fld">วันที่สั่ง</label><input type="date" id="e-od" value="' + esc(o.order_date) + '"></div><div><label class="fld">กำหนดส่ง</label><input type="date" id="e-sd" value="' + esc(o.ship_date) + '"></div>' +
+    '<div style="grid-column:1/-1"><label class="fld">เวลาส่ง (ไม่บังคับ)</label>' + timeFieldHTML('e-st', o.ship_time, 'เวลาส่ง') + '</div><div style="grid-column:1/-1" id="e-trkw"><label class="fld">เลขพัสดุ</label><input id="e-trk" value="' + esc(o.tracking_no) + '"></div>' +
     '<div><label class="fld">ค่าส่ง</label><input type="number" inputmode="decimal" id="e-fee" value="' + num(o.shipping_fee) + '"></div><div><label class="fld">ส่วนลด</label><input type="number" inputmode="decimal" id="e-disc" value="' + num(o.discount) + '"></div></div>' +
     '<label class="fld">หมายเหตุ</label><textarea id="e-note">' + esc(o.note) + '</textarea>', 'บันทึก', (d) => {
       const q = (i) => $(i, d.el).value, sd = q('#e-sd');
-      return ctx.store.updateOrder(id, { order_date: q('#e-od') || o.order_date, ship_date: sd, ship_time: sd ? validTime(q('#e-st')) : '', shipping_fee: num(q('#e-fee')), discount: num(q('#e-disc')), tracking_no: q('#e-trk').trim(), note: q('#e-note').trim() }).then(() => toast('บันทึกแล้ว'));
+      const patch = { order_date: q('#e-od') || o.order_date, ship_date: sd, ship_time: sd ? validTime(q('#e-st')) : '', shipping_fee: num(q('#e-fee')), discount: num(q('#e-disc')), tracking_no: m.method === 'pickup' ? str(o.tracking_no) : q('#e-trk').trim(), note: q('#e-note').trim() };
+      // only touch the delivery fields when changed (keeps the snapshot name of a deleted place)
+      if (m.method !== methodOf(o) || m.place !== (methodOf(o) === 'pickup' ? str(o.pickup_place_id) : '')) { patch.delivery_method = m.method; patch.pickup_place_id = m.method === 'pickup' ? m.place : ''; }
+      return ctx.store.updateOrder(id, patch).then(() => toast('บันทึกแล้ว'));
     });
+  const trkw = $('#e-trkw', d.el), sync = () => { trkw.hidden = m.method === 'pickup'; };
+  mountMethodField($('#e-mf', d.el), m, sync); sync();
 }
 
 // ---------------------------------------------------------------- cost & profit (SPEC8) — private: never on invoice / label
